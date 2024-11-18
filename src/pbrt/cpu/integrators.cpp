@@ -824,11 +824,15 @@ std::unique_ptr<PathIntegrator> PathIntegrator::Create(
 // testing path integrator Method Definitions
 TestPathIntegrator::TestPathIntegrator(int maxDepth, Camera camera, Sampler sampler,
                                Primitive aggregate, std::vector<Light> lights,
-                               const std::string &lightSampleStrategy, bool regularize)
+                               const std::string &lightSampleStrategy, bool regularize,
+                               int lightSampleN, int pbrtSampleN)
     : RayIntegrator(camera, sampler, aggregate, lights),
       maxDepth(maxDepth),
       lightSampler(LightSampler::Create(lightSampleStrategy, lights, Allocator())),
-      regularize(regularize) {}
+      regularize(regularize),
+      lightSampleN(lightSampleN),
+      pbrtSampleN(pbrtSampleN)
+        {}
 
 SampledSpectrum TestPathIntegrator::Li(RayDifferential ray, SampledWavelengths &lambda,
                                    Sampler sampler, ScratchBuffer &scratchBuffer,
@@ -856,7 +860,7 @@ SampledSpectrum TestPathIntegrator::Li(RayDifferential ray, SampledWavelengths &
                     // Compute MIS weight for infinite light
                     Float p_l = lightSampler.PMF(prevIntrCtx, light) *
                                 light.PDF_Li(prevIntrCtx, ray.d, true);
-                    Float w_b = PowerHeuristic(1, p_b, 1, p_l);
+                    Float w_b = PowerHeuristic(this->pbrtSampleN, p_b, this->lightSampleN, p_l);
 
                     L += beta * w_b * Le;
                 }
@@ -874,7 +878,7 @@ SampledSpectrum TestPathIntegrator::Li(RayDifferential ray, SampledWavelengths &
                 Light areaLight(si->intr.areaLight);
                 Float p_l = lightSampler.PMF(prevIntrCtx, areaLight) *
                             areaLight.PDF_Li(prevIntrCtx, ray.d, true);
-                Float w_l = PowerHeuristic(1, p_b, 1, p_l);
+                Float w_l = PowerHeuristic(this->pbrtSampleN, p_b, this->lightSampleN, p_l);
 
                 L += beta * w_l * Le;
             }
@@ -1004,7 +1008,7 @@ SampledSpectrum TestPathIntegrator::SampleLd(const SurfaceInteraction &intr, con
         return ls->L * f / p_l;
     else {
         Float p_b = bsdf->PDF(wo, wi);
-        Float w_l = PowerHeuristic(1, p_l, 1, p_b);
+        Float w_l = PowerHeuristic(this->lightSampleN, p_l, this->pbrtSampleN, p_b);
         return w_l * ls->L * f / p_l;
     }
 }
@@ -1020,8 +1024,13 @@ std::unique_ptr<TestPathIntegrator> TestPathIntegrator::Create(
     int maxDepth = parameters.GetOneInt("maxdepth", 5);
     std::string lightStrategy = parameters.GetOneString("lightsampler", "bvh");
     bool regularize = parameters.GetOneBool("regularize", false);
+
+
+    int lightSampleN = parameters.GetOneInt("lightsample", 1);
+    int pbrtSampleN = parameters.GetOneInt("pbrtsample", 1);
+
     return std::make_unique<TestPathIntegrator>(maxDepth, camera, sampler, aggregate, lights,
-                                            lightStrategy, regularize);
+                                            lightStrategy, regularize, lightSampleN, pbrtSampleN);
 }
 
 

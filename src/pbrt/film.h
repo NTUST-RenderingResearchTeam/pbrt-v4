@@ -367,6 +367,10 @@ class GBufferFilm : public FilmBase {
     void WriteImage(ImageMetadata metadata, Float splatScale = 1);
     Image GetImage(ImageMetadata *metadata, Float splatScale = 1);
 
+#ifdef PBRT_BUILD_GPU_RENDERER
+    Image Denoise();
+#endif
+
     std::string ToString() const;
 
     PBRT_CPU_GPU void ResetPixel(Point2i p) { std::memset(&pixels[p], 0, sizeof(Pixel)); }

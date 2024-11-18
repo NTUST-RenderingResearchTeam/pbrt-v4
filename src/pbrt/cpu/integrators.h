@@ -242,7 +242,8 @@ class TestPathIntegrator : public RayIntegrator {
     TestPathIntegrator(int maxDepth, Camera camera, Sampler sampler, Primitive aggregate,
                    std::vector<Light> lights,
                    const std::string &lightSampleStrategy = "bvh",
-                   bool regularize = false);
+                   bool regularize = false,
+                   int lightSampleN = 1, int pbrtSampleN = 1);
 
     SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda, Sampler sampler,
                        ScratchBuffer &scratchBuffer,
@@ -263,6 +264,8 @@ class TestPathIntegrator : public RayIntegrator {
 
     // PathIntegrator Private Members
     int maxDepth;
+    int lightSampleN;
+    int pbrtSampleN;
     LightSampler lightSampler;
     bool regularize;
 };

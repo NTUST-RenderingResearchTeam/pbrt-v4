@@ -90,7 +90,7 @@ void InitPBRT(const PBRTOptions &opt) {
     ParallelInit(nThreads);  // Threads must be launched before the
                              // profiler is initialized.
 
-    if (Options->useGPU) {
+    if (Options->useGPU || Options->denoise) {
 #ifdef PBRT_BUILD_GPU_RENDERER
         GPUInit();
 

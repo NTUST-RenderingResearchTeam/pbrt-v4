@@ -24,6 +24,7 @@
 
 #include <string>
 #include <vector>
+#include <filesystem>
 
 using namespace pbrt;
 
@@ -51,6 +52,7 @@ Rendering options:
   --fullscreen                  Render fullscreen. Only supported with --interactive.)"
 #ifdef PBRT_BUILD_GPU_RENDERER
             R"(
+  --denoiser                    Output denoised image using optix denoiser. (Default: disable)
   --gpu                         Use the GPU for rendering. (Default: disabled)
   --gpu-device <index>          Use specified GPU for rendering.)"
 #endif
@@ -159,6 +161,7 @@ int main(int argc, char *argv[]) {
         } else if (
 #ifdef PBRT_BUILD_GPU_RENDERER
             ParseArg(&iter, args.end(), "gpu", &options.useGPU, onError) ||
+            ParseArg(&iter, args.end(), "denoise", &options.denoise, onError) ||
             ParseArg(&iter, args.end(), "gpu-device", &options.gpuDevice, onError) ||
 #endif
             ParseArg(&iter, args.end(), "debugstart", &options.debugStart, onError) ||
@@ -286,6 +289,29 @@ int main(int argc, char *argv[]) {
             RenderWavefront(scene);
         else
             RenderCPU(scene);
+        
+        
+        Camera camera = scene.GetCamera();
+        Film film = camera.GetFilm();
+        if (options.denoise && film.Is<GBufferFilm>()) {
+            
+
+            GBufferFilm* gbufferFilm = film.Cast<GBufferFilm>();
+            ImageMetadata metadata;
+
+            std::string filename = film.GetFilename();
+            std::filesystem::path outputFile = filename;
+            filename = outputFile.stem().string() + "_denoised" + outputFile.extension().string();
+
+            printf("film format: gbuffer");
+            
+            Image denoised = gbufferFilm->Denoise();
+
+            denoised.Write(filename);
+
+
+        
+        }
 
         LOG_VERBOSE("Memory used after post-render cleanup: %s", GetCurrentRSS());
         // Clean up after rendering the scene

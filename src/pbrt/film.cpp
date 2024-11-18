@@ -29,8 +29,15 @@
 #include <pbrt/util/stats.h>
 #include <pbrt/util/transform.h>
 
+#ifdef PBRT_BUILD_GPU_RENDERER
+#include <pbrt/gpu/denoiser.h>
+#include <pbrt/gpu/util.h>
+#endif  // PBRT_BUILD_GPU_RENDERER
+
 #include <algorithm>
 #include <cstring>
+#include <array>
+#include <string>
 
 namespace pbrt {
 
@@ -801,6 +808,58 @@ Image GBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
 
     return image;
 }
+
+#ifdef PBRT_BUILD_GPU_RENDERER
+Image GBufferFilm::Denoise() {
+    PixelFormat format = writeFP16 ? PixelFormat::Half : PixelFormat::Float;
+    ImageMetadata metadata;
+    Image image = this->GetImage(&metadata, 1);
+    
+    Denoiser denoiser((Vector2i)image.Resolution(), true);
+    
+     size_t imageBytes = 3 * image.Resolution().x * image.Resolution().y * sizeof(float);
+    auto copyChannelsToGPU = [&](std::array<std::string, 3> ch, bool flipZ = false) {
+        void *bufGPU;
+        CUDA_CHECK(cudaMalloc(&bufGPU, imageBytes));
+        std::vector<float> hostStaging(imageBytes / sizeof(float));
+
+        ImageChannelDesc desc = image.GetChannelDesc(ch);
+        CHECK(desc);
+        int offset = 0;
+        for (int y = 0; y < image.Resolution().y; ++y)
+            for (int x = 0; x < image.Resolution().x; ++x) {
+                ImageChannelValues v = image.GetChannels({x, y}, desc);
+                if (flipZ)
+                    v[2] *= -1;  // flip normal's z--right handed...
+                for (int c = 0; c < 3; ++c)
+                    hostStaging[offset++] = v[c];
+            }
+        CUDA_CHECK(
+            cudaMemcpy(bufGPU, hostStaging.data(), imageBytes, cudaMemcpyHostToDevice));
+        return bufGPU;
+    };
+
+    RGB *rgbGPU = (RGB *)copyChannelsToGPU({"R", "G", "B"});
+    RGB *albedoGPU = nullptr;
+    Normal3f *normalGPU = nullptr;
+
+    albedoGPU = (RGB *)copyChannelsToGPU({"Albedo.R", "Albedo.G", "Albedo.B"});
+    normalGPU = (Normal3f *)copyChannelsToGPU({"Ns.X", "Ns.Y", "Ns.Z"}, true);
+    
+
+    RGB *rgbResultGPU;
+    CUDA_CHECK(cudaMalloc(&rgbResultGPU, imageBytes));
+
+    denoiser.Denoise(rgbGPU, normalGPU, albedoGPU, rgbResultGPU);
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    Image result(PixelFormat::Float, image.Resolution(), {"R", "G", "B"});
+    CUDA_CHECK(cudaMemcpy(result.RawPointer({0, 0}), (const void *)rgbResultGPU,
+                          imageBytes, cudaMemcpyDeviceToHost));
+    return result;
+}
+#endif
 
 std::string GBufferFilm::ToString() const {
     return StringPrintf("[ GBufferFilm %s outputFromRender: %s applyInverse: %s "
