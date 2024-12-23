@@ -145,6 +145,7 @@ BVHAggregate::BVHAggregate(std::vector<Primitive> prims, int maxPrimsInNode,
     CHECK(!primitives.empty());
     // Build BVH from _primitives_
     // Initialize _bvhPrimitives_ array for primitives
+    Printf("Scene Shape amount: %d\n", primitives.size());
     std::vector<BVHPrimitive> bvhPrimitives(primitives.size());
     for (size_t i = 0; i < primitives.size(); ++i)
         bvhPrimitives[i] = BVHPrimitive(i, primitives[i].Bounds());

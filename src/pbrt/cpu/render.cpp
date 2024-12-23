@@ -33,16 +33,20 @@ void RenderCPU(BasicScene &parsedScene) {
     NamedTextures textures = parsedScene.CreateTextures();
     LOG_VERBOSE("Finished textures");
 
+    printf("**Start Create Lights!**\n");
     // Lights
     std::map<int, pstd::vector<Light> *> shapeIndexToAreaLights;
     std::vector<Light> lights =
         parsedScene.CreateLights(textures, &shapeIndexToAreaLights);
+    printf("**End Create Lights!**\n");
 
+    printf("**Start Create Materials!**\n");
     LOG_VERBOSE("Starting materials");
     std::map<std::string, pbrt::Material> namedMaterials;
     std::vector<pbrt::Material> materials;
     parsedScene.CreateMaterials(textures, &namedMaterials, &materials);
     LOG_VERBOSE("Finished materials");
+    printf("**End Create Materials!**\n");
 
     Primitive accel = parsedScene.CreateAggregate(textures, shapeIndexToAreaLights, media,
                                                   namedMaterials, materials);
@@ -52,10 +56,12 @@ void RenderCPU(BasicScene &parsedScene) {
     Sampler sampler = parsedScene.GetSampler();
 
     // Integrator
+    printf("**Start Create Integrator!**\n");
     LOG_VERBOSE("Starting to create integrator");
     std::unique_ptr<Integrator> integrator(
         parsedScene.CreateIntegrator(camera, sampler, accel, lights));
     LOG_VERBOSE("Finished creating integrator");
+    printf("**End Create Integrator!**\n");
 
     // Helpful warnings
     bool haveScatteringMedia = false;
@@ -156,7 +162,9 @@ void RenderCPU(BasicScene &parsedScene) {
     }
 
     // Render!
+    printf("**Start Rendering!**\n");
     integrator->Render();
+    printf("**End Rendering!**\n");
 
     LOG_VERBOSE("Memory used after rendering: %s", GetCurrentRSS());
 

@@ -327,7 +327,7 @@ pstd::optional<LightLiSample> ProjectionLight::SampleLi(LightSampleContext ctx, 
     SampledSpectrum Li = I(wl, lambda) / DistanceSquared(p, ctx.p());
     if (!Li)
         return {};
-    return LightLiSample(Li, wi, 1, Interaction(p, &mediumInterface));
+    return LightLiSample(Li, wi, 1, Interaction(p, &mediumInterface), Type());
 }
 
 Float ProjectionLight::PDF_Li(LightSampleContext, Vector3f,
@@ -543,7 +543,7 @@ pstd::optional<LightLiSample> GoniometricLight::SampleLi(LightSampleContext ctx,
     Vector3f wi = Normalize(p - ctx.p());
     SampledSpectrum L =
         I(renderFromLight.ApplyInverse(-wi), lambda) / DistanceSquared(p, ctx.p());
-    return LightLiSample(L, wi, 1, Interaction(p, &mediumInterface));
+    return LightLiSample(L, wi, 1, Interaction(p, &mediumInterface), Type());
 }
 
 Float GoniometricLight::PDF_Li(LightSampleContext, Vector3f,
@@ -684,7 +684,7 @@ GoniometricLight *GoniometricLight::Create(const Transform &renderFromLight,
 DiffuseAreaLight::DiffuseAreaLight(const Transform &renderFromLight,
                                    const MediumInterface &mediumInterface, Spectrum Le,
                                    Float scale, const Shape shape, FloatTexture alpha,
-                                   Image im, const RGBColorSpace *imageColorSpace,
+                                   Image* im, const RGBColorSpace *imageColorSpace,
                                    bool twoSided)
     : LightBase(
           [](FloatTexture alpha) {
@@ -711,12 +711,12 @@ DiffuseAreaLight::DiffuseAreaLight(const Transform &renderFromLight,
       twoSided(twoSided),
       Lemit(LookupSpectrum(Le)),
       scale(scale),
-      image(std::move(im)),
+      image(im),
       imageColorSpace(imageColorSpace) {
     ++numAreaLights;
 
-    if (image) {
-        ImageChannelDesc desc = image.GetChannelDesc({"R", "G", "B"});
+    if (image != nullptr) {
+        ImageChannelDesc desc = image->GetChannelDesc({"R", "G", "B"});
         if (!desc)
             ErrorExit("Image used for DiffuseAreaLight doesn't have R, G, B "
                       "channels.");
@@ -757,7 +757,7 @@ pstd::optional<LightLiSample> DiffuseAreaLight::SampleLi(LightSampleContext ctx,
     SampledSpectrum Le = L(ss->intr.p(), ss->intr.n, ss->intr.uv, -wi, lambda);
     if (!Le)
         return {};
-    return LightLiSample(Le, wi, ss->pdf, ss->intr);
+    return LightLiSample(Le, wi, ss->pdf, ss->intr, Type());
 }
 
 Float DiffuseAreaLight::PDF_Li(LightSampleContext ctx, Vector3f wi,
@@ -770,15 +770,15 @@ SampledSpectrum DiffuseAreaLight::Phi(SampledWavelengths lambda) const {
     SampledSpectrum L(0.f);
     if (image) {
         // Compute average light image emission
-        for (int y = 0; y < image.Resolution().y; ++y)
-            for (int x = 0; x < image.Resolution().x; ++x) {
+        for (int y = 0; y < image->Resolution().y; ++y)
+            for (int x = 0; x < image->Resolution().x; ++x) {
                 RGB rgb;
                 for (int c = 0; c < 3; ++c)
-                    rgb[c] = image.GetChannel({x, y}, c);
+                    rgb[c] = image->GetChannel({x, y}, c);
                 L += RGBIlluminantSpectrum(*imageColorSpace, ClampZero(rgb))
                          .Sample(lambda);
             }
-        L *= scale / (image.Resolution().x * image.Resolution().y);
+        L *= scale / (image->Resolution().x * image->Resolution().y);
 
     } else
         L = Lemit->Sample(lambda) * scale;
@@ -791,11 +791,11 @@ pstd::optional<LightBounds> DiffuseAreaLight::Bounds() const {
     if (image) {
         // Compute average _DiffuseAreaLight_ image channel value
         // Assume no distortion in the mapping, FWIW...
-        for (int y = 0; y < image.Resolution().y; ++y)
-            for (int x = 0; x < image.Resolution().x; ++x)
+        for (int y = 0; y < image->Resolution().y; ++y)
+            for (int x = 0; x < image->Resolution().x; ++x)
                 for (int c = 0; c < 3; ++c)
-                    phi += image.GetChannel({x, y}, c);
-        phi /= 3 * image.Resolution().x * image.Resolution().y;
+                    phi += image->GetChannel({x, y}, c);
+        phi /= 3 * image->Resolution().x * image->Resolution().y;
 
     } else
         phi = Lemit->MaxValue();
@@ -867,7 +867,7 @@ std::string DiffuseAreaLight::ToString() const {
 
 DiffuseAreaLight *DiffuseAreaLight::Create(const Transform &renderFromLight,
                                            Medium medium,
-                                           const ParameterDictionary &parameters,
+                                           const ParameterDictionary &parameters, Image* im,
                                            const RGBColorSpace *colorSpace,
                                            const FileLoc *loc, Allocator alloc,
                                            const Shape shape, FloatTexture alphaTex) {
@@ -876,33 +876,32 @@ DiffuseAreaLight *DiffuseAreaLight::Create(const Transform &renderFromLight,
     bool twoSided = parameters.GetOneBool("twosided", false);
 
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
-    Image image(alloc);
     const RGBColorSpace *imageColorSpace = nullptr;
     if (!filename.empty()) {
         if (L)
             ErrorExit(loc, "Both \"L\" and \"filename\" specified for DiffuseAreaLight.");
-        ImageAndMetadata im = Image::Read(filename, alloc);
 
-        if (im.image.HasAnyInfinitePixels())
+        if (im->HasAnyInfinitePixels())
             ErrorExit(
                 loc,
                 "%s: image has infinite pixel values and so is not suitable as a light.",
                 filename);
-        if (im.image.HasAnyNaNPixels())
+        if (im->HasAnyNaNPixels())
             ErrorExit(loc,
                       "%s: image has not-a-number pixel values and so is not suitable as "
                       "a light.",
                       filename);
 
-        ImageChannelDesc channelDesc = im.image.GetChannelDesc({"R", "G", "B"});
+        ImageChannelDesc channelDesc = im->GetChannelDesc({"R", "G", "B"});
         if (!channelDesc)
             ErrorExit(loc,
                       "%s: Image provided to \"diffuse\" area light must have "
                       "R, G, and B channels.",
                       filename);
-        image = im.image.SelectChannels(channelDesc, alloc);
 
-        imageColorSpace = im.metadata.GetColorSpace();
+        // *Add maybe should read image as ImageAndMetadata
+        // imageColorSpace = im->GetColorSpace();
+        imageColorSpace = RGBColorSpace::sRGB;
     } else if (!L)
         L = &colorSpace->illuminant;
 
@@ -916,17 +915,17 @@ DiffuseAreaLight *DiffuseAreaLight::Create(const Transform &renderFromLight,
         // radiance such that the user-defined power will be the actual power
         // emitted by the light.
         Float k_e = 1;
-        if (image) {
+        if (im) {
             // Get the appropriate luminance vector from the image colour space
             RGB lum = imageColorSpace->LuminanceVector();
             k_e = 0;
             // Assume no distortion in the mapping, FWIW...
-            for (int y = 0; y < image.Resolution().y; ++y)
-                for (int x = 0; x < image.Resolution().x; ++x) {
+            for (int y = 0; y < im->Resolution().y; ++y)
+                for (int x = 0; x < im->Resolution().x; ++x) {
                     for (int c = 0; c < 3; ++c)
-                        k_e += image.GetChannel({x, y}, c) * lum[c];
+                        k_e += im->GetChannel({x, y}, c) * lum[c];
                 }
-            k_e /= image.Resolution().x * image.Resolution().y;
+            k_e /= im->Resolution().x * im->Resolution().y;
         }
 
         k_e *= (twoSided ? 2 : 1) * shape.Area() * Pi;
@@ -936,7 +935,7 @@ DiffuseAreaLight *DiffuseAreaLight::Create(const Transform &renderFromLight,
     }
 
     return alloc.new_object<DiffuseAreaLight>(renderFromLight, medium, L, scale, shape,
-                                              alphaTex, std::move(image), imageColorSpace,
+                                              alphaTex, im, imageColorSpace,
                                               twoSided);
 }
 
@@ -961,7 +960,7 @@ pstd::optional<LightLiSample> UniformInfiniteLight::SampleLi(
     Vector3f wi = SampleUniformSphere(u);
     Float pdf = UniformSpherePDF();
     return LightLiSample(scale * Lemit->Sample(lambda), wi, pdf,
-                         Interaction(ctx.p() + wi * (2 * sceneRadius), &mediumInterface));
+                         Interaction(ctx.p() + wi * (2 * sceneRadius), &mediumInterface), Type());
 }
 
 Float UniformInfiniteLight::PDF_Li(LightSampleContext ctx, Vector3f w,
@@ -1246,7 +1245,7 @@ pstd::optional<LightLiSample> PortalImageInfiniteLight::SampleLi(
     // Compute radiance for portal light sample and return _LightLiSample_
     SampledSpectrum L = ImageLookup(*uv, lambda);
     Point3f pl = ctx.p() + 2 * sceneRadius * wi;
-    return LightLiSample(L, wi, pdf, Interaction(pl, &mediumInterface));
+    return LightLiSample(L, wi, pdf, Interaction(pl, &mediumInterface), Type());
 }
 
 Float PortalImageInfiniteLight::PDF_Li(LightSampleContext ctx, Vector3f w,
@@ -1673,12 +1672,12 @@ Light Light::Create(const std::string &name, const ParameterDictionary &paramete
 
 Light Light::CreateArea(const std::string &name, const ParameterDictionary &parameters,
                         const Transform &renderFromLight,
-                        const MediumInterface &mediumInterface, const Shape shape,
+                        const MediumInterface &mediumInterface, const Shape shape, Image *im,
                         FloatTexture alpha, const FileLoc *loc, Allocator alloc) {
     Light area = nullptr;
     if (name == "diffuse")
         area =
-            DiffuseAreaLight::Create(renderFromLight, mediumInterface.outside, parameters,
+            DiffuseAreaLight::Create(renderFromLight, mediumInterface.outside, parameters, im,
                                      parameters.ColorSpace(), loc, alloc, shape, alpha);
     else
         ErrorExit(loc, "%s: area light type unknown.", name);

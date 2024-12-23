@@ -231,6 +231,22 @@ RGB SampledSpectrum::ToRGB(const SampledWavelengths &lambda,
     return cs.ToRGB(xyz);
 }
 
+// *Add
+// calculate Luminance with RGB grayscle
+Float SampledSpectrum::ToLuminance(const SampledWavelengths &lambda) const {
+    XYZ xyz = ToXYZ(lambda);
+    RGB rgb = RGBColorSpace::sRGB->ToRGB(xyz);
+    rgb = ClampZero(rgb);
+    return rgb.r * 0.299f + rgb.g * 0.587f + rgb.b * 0.114f;
+}
+
+Float SampledSpectrum::ToLuminanceV2(const SampledWavelengths &lambda) const {
+    XYZ xyz = ToXYZ(lambda);
+    RGB rgb = RGBColorSpace::sRGB->ToRGB(xyz);
+    rgb = ClampZero(rgb);
+    return rgb.r + rgb.g + rgb.b;
+}
+
 RGBAlbedoSpectrum::RGBAlbedoSpectrum(const RGBColorSpace &cs, RGB rgb) {
     DCHECK_LE(std::max({rgb.r, rgb.g, rgb.b}), 1);
     DCHECK_GE(std::min({rgb.r, rgb.g, rgb.b}), 0);

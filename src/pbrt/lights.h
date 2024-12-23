@@ -44,14 +44,16 @@ struct LightLiSample {
     LightLiSample() = default;
     PBRT_CPU_GPU
     LightLiSample(const SampledSpectrum &L, Vector3f wi, Float pdf,
-                  const Interaction &pLight)
-        : L(L), wi(wi), pdf(pdf), pLight(pLight) {}
+                  const Interaction &pLight, LightType type)
+        : L(L), wi(wi), pdf(pdf), pLight(pLight), type(type) {}
     std::string ToString() const;
 
     SampledSpectrum L;
     Vector3f wi;
     Float pdf;
     Interaction pLight;
+    // *Add for wavefront
+    LightType type;
 };
 
 // LightLeSample Definition
@@ -224,7 +226,7 @@ class PointLight : public LightBase {
         Point3f p = renderFromLight(Point3f(0, 0, 0));
         Vector3f wi = Normalize(p - ctx.p());
         SampledSpectrum Li = scale * I->Sample(lambda) / DistanceSquared(p, ctx.p());
-        return LightLiSample(Li, wi, 1, Interaction(p, &mediumInterface));
+        return LightLiSample(Li, wi, 1, Interaction(p, &mediumInterface), Type());
     }
 
     PBRT_CPU_GPU
@@ -285,7 +287,7 @@ class DistantLight : public LightBase {
         Vector3f wi = Normalize(renderFromLight(Vector3f(0, 0, 1)));
         Point3f pOutside = ctx.p() + wi * (2 * sceneRadius);
         return LightLiSample(scale * Lemit->Sample(lambda), wi, 1,
-                             Interaction(pOutside, nullptr));
+                             Interaction(pOutside, nullptr), Type());
     }
 
   private:
@@ -409,11 +411,11 @@ class DiffuseAreaLight : public LightBase {
     // DiffuseAreaLight Public Methods
     DiffuseAreaLight(const Transform &renderFromLight,
                      const MediumInterface &mediumInterface, Spectrum Le, Float scale,
-                     const Shape shape, FloatTexture alpha, Image image,
+                     const Shape shape, FloatTexture alpha, Image* image,
                      const RGBColorSpace *imageColorSpace, bool twoSided);
 
     static DiffuseAreaLight *Create(const Transform &renderFromLight, Medium medium,
-                                    const ParameterDictionary &parameters,
+                                    const ParameterDictionary &parameters, Image* im,
                                     const RGBColorSpace *colorSpace, const FileLoc *loc,
                                     Allocator alloc, const Shape shape,
                                     FloatTexture alpha);
@@ -451,7 +453,7 @@ class DiffuseAreaLight : public LightBase {
             RGB rgb;
             uv[1] = 1 - uv[1];
             for (int c = 0; c < 3; ++c)
-                rgb[c] = image.BilerpChannel(uv, c);
+                rgb[c] = image->BilerpChannel(uv, c);
             RGBIlluminantSpectrum spec(*imageColorSpace, ClampZero(rgb));
             return scale * spec.Sample(lambda);
 
@@ -475,7 +477,7 @@ class DiffuseAreaLight : public LightBase {
     bool twoSided;
     const DenselySampledSpectrum *Lemit;
     Float scale;
-    Image image;
+    Image *image;
     const RGBColorSpace *imageColorSpace;
 
     // DiffuseAreaLight Private Methods
@@ -601,7 +603,7 @@ class ImageInfiniteLight : public LightBase {
         // Return radiance value for infinite light direction
         return LightLiSample(
             ImageLe(uv, lambda), wi, pdf,
-            Interaction(ctx.p() + wi * (2 * sceneRadius), &mediumInterface));
+            Interaction(ctx.p() + wi * (2 * sceneRadius), &mediumInterface), Type());
     }
 
     pstd::optional<LightBounds> Bounds() const { return {}; }
@@ -779,7 +781,7 @@ class SpotLight : public LightBase {
 
         if (!Li)
             return {};
-        return LightLiSample(Li, wi, 1, Interaction(p, &mediumInterface));
+        return LightLiSample(Li, wi, 1, Interaction(p, &mediumInterface), Type());
     }
 
   private:

@@ -289,7 +289,7 @@ pstd::optional<SampledLight> ExhaustiveLightSampler::Sample(const LightSampleCon
             return {};
 
         Float pdf = (1.f - pInfinite) * wrs.SampleProbability();
-        return SampledLight{wrs.GetSample(), pdf};
+        return SampledLight{wrs.GetSample(), pdf, wrs};
     }
 }
 

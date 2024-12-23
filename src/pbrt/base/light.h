@@ -41,7 +41,6 @@ class Light : public TaggedPointer<  // Light Source Types
                   PointLight, DistantLight, ProjectionLight, GoniometricLight, SpotLight,
                   DiffuseAreaLight, UniformInfiniteLight, ImageInfiniteLight,
                   PortalImageInfiniteLight
-
                   > {
   public:
     // Light Interface
@@ -54,7 +53,7 @@ class Light : public TaggedPointer<  // Light Source Types
     static Light CreateArea(const std::string &name,
                             const ParameterDictionary &parameters,
                             const Transform &renderFromLight,
-                            const MediumInterface &mediumInterface, const Shape shape,
+                            const MediumInterface &mediumInterface, const Shape shape, Image *im,
                             FloatTexture alpha, const FileLoc *loc, Allocator alloc);
 
     SampledSpectrum Phi(SampledWavelengths lambda) const;

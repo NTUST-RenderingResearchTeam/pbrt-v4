@@ -68,6 +68,13 @@ pstd::optional<CameraRayDifferential> Camera::GenerateRayDifferential(
     return Dispatch(gen);
 }
 
+// *Add camera animated
+pstd::optional<CameraRayDifferential> Camera::GenerateRayDifferentialAnimated(
+    CameraSample sample, SampledWavelengths &lambda, Float aTime) const {
+    auto gen = [&](auto ptr) { return ptr->GenerateRayDifferentialAnimated(sample, lambda, aTime); };
+    return Dispatch(gen);
+}
+
 SampledSpectrum Camera::We(const Ray &ray, SampledWavelengths &lambda,
                            Point2f *pRaster2) const {
     auto we = [&](auto ptr) { return ptr->We(ray, lambda, pRaster2); };
@@ -149,6 +156,45 @@ pstd::optional<CameraRayDifferential> CameraBase::GenerateRayDifferential(
     // Return approximate ray differential and weight
     rd.hasDifferentials = rx && ry;
     return CameraRayDifferential{rd, cr->weight};
+}
+
+// TODO:: animated camera
+pstd::optional<CameraRayDifferential> CameraBase::GenerateRayDifferentialAnimated(
+    Camera camera, CameraSample sample, SampledWavelengths &lambda, Float aTime) {
+    // Generate regular camera ray _cr_ for ray differential
+    pstd::optional<CameraRay> cr = camera.GenerateRay(sample, lambda);
+    if (!cr)
+        return {};
+    RayDifferential rd(cr->ray);
+
+    // Find camera ray after shifting one pixel in the $x$ direction
+    pstd::optional<CameraRay> rx;
+    for (Float eps : {.05f, -.05f}) {
+        CameraSample sshift = sample;
+        sshift.pFilm.x += eps;
+        // Try to generate ray with _sshift_ and compute $x$ differential
+        if (rx = camera.GenerateRay(sshift, lambda); rx) {
+            rd.rxOrigin = rd.o + (rx->ray.o - rd.o) / eps;
+            rd.rxDirection = rd.d + (rx->ray.d - rd.d) / eps;
+            break;
+        }
+    }
+
+    // Find camera ray after shifting one pixel in the $y$ direction
+    pstd::optional<CameraRay> ry;
+    for (Float eps : {.05f, -.05f}) {
+        CameraSample sshift = sample;
+        sshift.pFilm.y += eps;
+        if (ry = camera.GenerateRay(sshift, lambda); ry) {
+            rd.ryOrigin = rd.o + (ry->ray.o - rd.o) / eps;
+            rd.ryDirection = rd.d + (ry->ray.d - rd.d) / eps;
+            break;
+        }
+    }
+
+    // Return approximate ray differential and weight
+    rd.hasDifferentials = rx && ry;
+    return CameraRayDifferential{rd, cr->weight, cr->pCamera};
 }
 
 void CameraBase::FindMinimumDifferentials(Camera camera) {
@@ -305,6 +351,31 @@ pstd::optional<CameraRay> OrthographicCamera::GenerateRay(
     return CameraRay{RenderFromCamera(ray)};
 }
 
+// *Add camera animated
+pstd::optional<CameraRay> OrthographicCamera::GenerateRayAnimated(
+    CameraSample sample, SampledWavelengths &lambda, Float aTime) const {
+    // Compute raster and camera sample positions
+    Point3f pFilm = Point3f(sample.pFilm.x, sample.pFilm.y, 0);
+    Point3f pCamera = cameraFromRaster(pFilm);
+
+    Ray ray(pCamera, Vector3f(0, 0, 1), aTime, medium);
+    // Modify ray for depth of field
+    if (lensRadius > 0) {
+        // Sample point on lens
+        Point2f pLens = lensRadius * SampleUniformDiskConcentric(sample.pLens);
+
+        // Compute point on plane of focus
+        Float ft = focalDistance / ray.d.z;
+        Point3f pFocus = ray(ft);
+
+        // Update ray for effect of lens
+        ray.o = Point3f(pLens.x, pLens.y, 0);
+        ray.d = Normalize(pFocus - ray.o);
+    }
+
+    return CameraRay{RenderFromCamera(ray), SampledSpectrum(1), pCamera};
+}
+
 pstd::optional<CameraRayDifferential> OrthographicCamera::GenerateRayDifferential(
     CameraSample sample, SampledWavelengths &lambda) const {
     // Compute main orthographic viewing ray
@@ -350,6 +421,53 @@ pstd::optional<CameraRayDifferential> OrthographicCamera::GenerateRayDifferentia
 
     ray.hasDifferentials = true;
     return CameraRayDifferential{RenderFromCamera(ray)};
+}
+
+pstd::optional<CameraRayDifferential> OrthographicCamera::GenerateRayDifferentialAnimated(
+    CameraSample sample, SampledWavelengths &lambda, Float aTime) const {
+    // Compute main orthographic viewing ray
+    // Compute raster and camera sample positions
+    Point3f pFilm = Point3f(sample.pFilm.x, sample.pFilm.y, 0);
+    Point3f pCamera = cameraFromRaster(pFilm);
+
+    RayDifferential ray(pCamera, Vector3f(0, 0, 1), aTime, medium);
+    // Modify ray for depth of field
+    if (lensRadius > 0) {
+        // Sample point on lens
+        Point2f pLens = lensRadius * SampleUniformDiskConcentric(sample.pLens);
+
+        // Compute point on plane of focus
+        Float ft = focalDistance / ray.d.z;
+        Point3f pFocus = ray(ft);
+
+        // Update ray for effect of lens
+        ray.o = Point3f(pLens.x, pLens.y, 0);
+        ray.d = Normalize(pFocus - ray.o);
+    }
+
+    // Compute ray differentials for _OrthographicCamera_
+    if (lensRadius > 0) {
+        // Compute _OrthographicCamera_ ray differentials accounting for lens
+        // Sample point on lens
+        Point2f pLens = lensRadius * SampleUniformDiskConcentric(sample.pLens);
+
+        Float ft = focalDistance / ray.d.z;
+        Point3f pFocus = pCamera + dxCamera + (ft * Vector3f(0, 0, 1));
+        ray.rxOrigin = Point3f(pLens.x, pLens.y, 0);
+        ray.rxDirection = Normalize(pFocus - ray.rxOrigin);
+
+        pFocus = pCamera + dyCamera + (ft * Vector3f(0, 0, 1));
+        ray.ryOrigin = Point3f(pLens.x, pLens.y, 0);
+        ray.ryDirection = Normalize(pFocus - ray.ryOrigin);
+
+    } else {
+        ray.rxOrigin = ray.o + dxCamera;
+        ray.ryOrigin = ray.o + dyCamera;
+        ray.rxDirection = ray.ryDirection = ray.d;
+    }
+
+    ray.hasDifferentials = true;
+    return CameraRayDifferential{RenderFromCamera(ray), SampledSpectrum(1), pCamera};
 }
 
 std::string OrthographicCamera::ToString() const {
@@ -407,6 +525,7 @@ pstd::optional<CameraRay> PerspectiveCamera::GenerateRay(
     Point3f pFilm = Point3f(sample.pFilm.x, sample.pFilm.y, 0);
     Point3f pCamera = cameraFromRaster(pFilm);
 
+    
     Ray ray(Point3f(0, 0, 0), Normalize(Vector3f(pCamera)), SampleTime(sample.time),
             medium);
     // Modify ray for depth of field
@@ -424,6 +543,32 @@ pstd::optional<CameraRay> PerspectiveCamera::GenerateRay(
     }
 
     return CameraRay{RenderFromCamera(ray)};
+}
+
+// *Add camera animated
+pstd::optional<CameraRay> PerspectiveCamera::GenerateRayAnimated(
+    CameraSample sample, SampledWavelengths &lambda, Float aTime) const {
+    // Compute raster and camera sample positions
+    Point3f pFilm = Point3f(sample.pFilm.x, sample.pFilm.y, 0);
+    Point3f pCamera = cameraFromRaster(pFilm);
+
+    Ray ray(Point3f(0, 0, 0), Normalize(Vector3f(pCamera)), aTime,
+            medium);
+    // Modify ray for depth of field
+    if (lensRadius > 0) {
+        // Sample point on lens
+        Point2f pLens = lensRadius * SampleUniformDiskConcentric(sample.pLens);
+
+        // Compute point on plane of focus
+        Float ft = focalDistance / ray.d.z;
+        Point3f pFocus = ray(ft);
+
+        // Update ray for effect of lens
+        ray.o = Point3f(pLens.x, pLens.y, 0);
+        ray.d = Normalize(pFocus - ray.o);
+    }
+
+    return CameraRay{RenderFromCamera(ray), SampledSpectrum(1), RenderFromCamera(pCamera, aTime)};
 }
 
 pstd::optional<CameraRayDifferential> PerspectiveCamera::GenerateRayDifferential(
@@ -475,6 +620,59 @@ pstd::optional<CameraRayDifferential> PerspectiveCamera::GenerateRayDifferential
 
     ray.hasDifferentials = true;
     return CameraRayDifferential{RenderFromCamera(ray)};
+}
+
+// *Add camera animated
+pstd::optional<CameraRayDifferential> PerspectiveCamera::GenerateRayDifferentialAnimated(
+    CameraSample sample, SampledWavelengths &lambda, Float aTime) const {
+    // Compute raster and camera sample positions
+    Point3f pFilm = Point3f(sample.pFilm.x, sample.pFilm.y, 0);
+    Point3f pCamera = cameraFromRaster(pFilm);
+    Vector3f dir = Normalize(Vector3f(pCamera.x, pCamera.y, pCamera.z));
+    // TODO:: animated add time and set ray time with same interval
+    RayDifferential ray(Point3f(0, 0, 0), dir, aTime, medium);
+    // Modify ray for depth of field
+    if (lensRadius > 0) {
+        // Sample point on lens
+        Point2f pLens = lensRadius * SampleUniformDiskConcentric(sample.pLens);
+
+        // Compute point on plane of focus
+        Float ft = focalDistance / ray.d.z;
+        Point3f pFocus = ray(ft);
+
+        // Update ray for effect of lens
+        ray.o = Point3f(pLens.x, pLens.y, 0);
+        ray.d = Normalize(pFocus - ray.o);
+    }
+
+    // Compute offset rays for _PerspectiveCamera_ ray differentials
+    if (lensRadius > 0) {
+        // Compute _PerspectiveCamera_ ray differentials accounting for lens
+        // Sample point on lens
+        Point2f pLens = lensRadius * SampleUniformDiskConcentric(sample.pLens);
+
+        // Compute $x$ ray differential for _PerspectiveCamera_ with lens
+        Vector3f dx = Normalize(Vector3f(pCamera + dxCamera));
+        Float ft = focalDistance / dx.z;
+        Point3f pFocus = Point3f(0, 0, 0) + (ft * dx);
+        ray.rxOrigin = Point3f(pLens.x, pLens.y, 0);
+        ray.rxDirection = Normalize(pFocus - ray.rxOrigin);
+
+        // Compute $y$ ray differential for _PerspectiveCamera_ with lens
+        Vector3f dy = Normalize(Vector3f(pCamera + dyCamera));
+        ft = focalDistance / dy.z;
+        pFocus = Point3f(0, 0, 0) + (ft * dy);
+        ray.ryOrigin = Point3f(pLens.x, pLens.y, 0);
+        ray.ryDirection = Normalize(pFocus - ray.ryOrigin);
+
+    } else {
+        ray.rxOrigin = ray.ryOrigin = ray.o;
+        ray.rxDirection = Normalize(Vector3f(pCamera) + dxCamera);
+        ray.ryDirection = Normalize(Vector3f(pCamera) + dyCamera);
+    }
+
+    ray.hasDifferentials = true;
+    return CameraRayDifferential{RenderFromCamera(ray), SampledSpectrum(1), pCamera};
 }
 
 std::string PerspectiveCamera::ToString() const {
@@ -626,6 +824,30 @@ pstd::optional<CameraRay> SphericalCamera::GenerateRay(CameraSample sample,
     pstd::swap(dir.y, dir.z);
 
     Ray ray(Point3f(0, 0, 0), dir, SampleTime(sample.time), medium);
+    return CameraRay{RenderFromCamera(ray)};
+}
+
+// *Add camera animated
+pstd::optional<CameraRay> SphericalCamera::GenerateRayAnimated(CameraSample sample,
+                                                       SampledWavelengths &lambda, Float aTime) const {
+    // Compute spherical camera ray direction
+    Point2f uv(sample.pFilm.x / film.FullResolution().x,
+               sample.pFilm.y / film.FullResolution().y);
+    Vector3f dir;
+    if (mapping == EquiRectangular) {
+        // Compute ray direction using equirectangular mapping
+        Float theta = Pi * uv[1], phi = 2 * Pi * uv[0];
+        dir = SphericalDirection(std::sin(theta), std::cos(theta), phi);
+
+    } else {
+        // Compute ray direction using equal area mapping
+        uv = WrapEqualAreaSquare(uv);
+        dir = EqualAreaSquareToSphere(uv);
+    }
+    pstd::swap(dir.y, dir.z);
+
+    Ray ray(Point3f(0, 0, 0), dir, aTime, medium);
+    // TODO?:: pCamera for motion vector
     return CameraRay{RenderFromCamera(ray)};
 }
 
@@ -945,6 +1167,39 @@ pstd::optional<CameraRay> RealisticCamera::GenerateRay(CameraSample sample,
     Float cosTheta = Normalize(rFilm.d).z;
     weight *= Pow<4>(cosTheta) / (eps->pdf * Sqr(LensRearZ()));
 
+    return CameraRay{ray, SampledSpectrum(weight)};
+}
+
+pstd::optional<CameraRay> RealisticCamera::GenerateRayAnimated(CameraSample sample,
+                                                       SampledWavelengths &lambda, Float aTime) const {
+    // Find point on film, _pFilm_, corresponding to _sample.pFilm_
+    Point2f s(sample.pFilm.x / film.FullResolution().x,
+              sample.pFilm.y / film.FullResolution().y);
+    Point2f pFilm2 = physicalExtent.Lerp(s);
+    Point3f pFilm(-pFilm2.x, pFilm2.y, 0);
+
+    // Trace ray from _pFilm_ through lens system
+    pstd::optional<ExitPupilSample> eps =
+        SampleExitPupil(Point2f(pFilm.x, pFilm.y), sample.pLens);
+    if (!eps)
+        return {};
+    Ray rFilm(pFilm, eps->pPupil - pFilm);
+    Ray ray;
+    Float weight = TraceLensesFromFilm(rFilm, &ray);
+    if (weight == 0)
+        return {};
+
+    // Finish initialization of _RealisticCamera_ ray
+    ray.time = aTime;
+    ray.medium = medium;
+    ray = RenderFromCamera(ray);
+    ray.d = Normalize(ray.d);
+
+    // Compute weighting for _RealisticCamera_ ray
+    Float cosTheta = Normalize(rFilm.d).z;
+    weight *= Pow<4>(cosTheta) / (eps->pdf * Sqr(LensRearZ()));
+
+    // TODO?:: pCamera for motion vector
     return CameraRay{ray, SampledSpectrum(weight)};
 }
 

@@ -683,6 +683,7 @@ void parse(ParserTarget *target, std::unique_ptr<Tokenizer> t) {
     };
 
     pstd::optional<Token> tok;
+    printf("**Start Parsing!**\n");
 
     while (true) {
         tok = nextToken(TokenOptional);
@@ -985,6 +986,8 @@ void parse(ParserTarget *target, std::unique_ptr<Tokenizer> t) {
             syntaxError(*tok);
         }
     }
+
+    printf("**End Parsing!**\n");
 
     for (auto &import : imports) {
         import.first->Wait();

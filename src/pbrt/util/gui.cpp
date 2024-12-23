@@ -89,7 +89,7 @@ void GUI::keyboardCallback(GLFWwindow *window, int key, int scan, int action, in
 
 bool GUI::processMouse() {
     bool needsReset = false;
-    double amount = 1.f;
+    double amount = 10.f;
     if (!pressed)
         return false;
     if (xoffset < 0) {

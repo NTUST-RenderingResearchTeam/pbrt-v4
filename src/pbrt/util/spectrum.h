@@ -202,6 +202,11 @@ class SampledSpectrum {
     PBRT_CPU_GPU
     Float y(const SampledWavelengths &lambda) const;
 
+    // *Add
+    // calculate Luminance with RGB grayscle
+    Float ToLuminance(const SampledWavelengths &lambda) const;
+    Float ToLuminanceV2(const SampledWavelengths &lambda) const;
+
     SampledSpectrum() = default;
     PBRT_CPU_GPU
     explicit SampledSpectrum(Float c) { values.fill(c); }

@@ -46,11 +46,34 @@ class Camera : public TaggedPointer<PerspectiveCamera, OrthographicCamera,
     PBRT_CPU_GPU inline pstd::optional<CameraRay> GenerateRay(
         CameraSample sample, SampledWavelengths &lambda) const;
 
+    // *Add camera animated
+    // modify pbrt's animated to render multi image
+    // the original pbrt animate is for move between shutter time.
+    // and it's for motion blur effect not for real animate
+    PBRT_CPU_GPU inline pstd::optional<CameraRay> GenerateRayAnimated(
+        CameraSample sample, SampledWavelengths &lambda, Float aTime) const;
+
+    PBRT_CPU_GPU inline Point3f Camera::reProjected(Point3f renderCamera, Float reprojectTime) const;
+
     PBRT_CPU_GPU
     pstd::optional<CameraRayDifferential> GenerateRayDifferential(
         CameraSample sample, SampledWavelengths &lambda) const;
 
+    // *Add camera animated
+    // modify pbrt's animated to render multi image
+    // the original pbrt animate is for move between shutter time.
+    // and it's for motion blur effect not for real animate
+    PBRT_CPU_GPU
+    pstd::optional<CameraRayDifferential> GenerateRayDifferentialAnimated(
+        CameraSample sample, SampledWavelengths &lambda, Float aTime) const;
+
+
     PBRT_CPU_GPU inline Film GetFilm() const;
+
+    // *Add
+    PBRT_CPU_GPU inline Float GetShutterOpen() const;
+
+    PBRT_CPU_GPU inline Float GetShutterClose() const;
 
     PBRT_CPU_GPU inline Float SampleTime(Float u) const;
 

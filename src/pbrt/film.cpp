@@ -590,6 +590,7 @@ void GBufferFilm::AddSample(Point2i pFilm, SampledSpectrum L,
                             const VisibleSurface *visibleSurface, Float weight) {
     RGB rgb = sensor->ToSensorRGB(L, lambda);
     Float m = std::max({rgb.r, rgb.g, rgb.b});
+    // firefly rejection
     if (m > maxComponentValue)
         rgb *= maxComponentValue / m;
 
@@ -845,6 +846,274 @@ GBufferFilm *GBufferFilm::Create(const ParameterDictionary &parameters,
                                          writeFP16, alloc);
 }
 
+//////////////////////////////////////////////ReSTIR GBuffer//////////////////////////////////////////////
+
+
+// RestirGBufferFilm Method Definitions
+void RestirGBufferFilm::AddSample(Point2i pFilm, SampledSpectrum L,
+                            const SampledWavelengths &lambda,
+                            const VisibleSurface *visibleSurface, Float weight) {
+    RGB rgb = sensor->ToSensorRGB(L, lambda);
+    Float m = std::max({rgb.r, rgb.g, rgb.b});
+    if (m > maxComponentValue)
+        rgb *= maxComponentValue / m;
+
+    Pixel &p = pixels[pFilm];
+    if (visibleSurface && *visibleSurface) {
+        p.gBufferWeightSum += weight;
+
+        // Update variance estimates.
+        for (int c = 0; c < 3; ++c)
+            p.rgbVariance[c].Add(rgb[c]);
+
+        if (applyInverse) {
+            p.pSum += weight * outputFromRender.ApplyInverse(visibleSurface->p,
+                                                             visibleSurface->time);
+            p.nSum += weight * outputFromRender.ApplyInverse(visibleSurface->n,
+                                                             visibleSurface->time);
+            p.nsSum += weight * outputFromRender.ApplyInverse(visibleSurface->ns,
+                                                              visibleSurface->time);
+            p.dzdxSum +=
+                weight *
+                outputFromRender.ApplyInverse(visibleSurface->dpdx, visibleSurface->time)
+                    .z;
+            p.dzdySum +=
+                weight *
+                outputFromRender.ApplyInverse(visibleSurface->dpdy, visibleSurface->time)
+                    .z;
+        } else {
+            p.pSum += weight * outputFromRender(visibleSurface->p, visibleSurface->time);
+            p.nSum += weight * outputFromRender(visibleSurface->n, visibleSurface->time);
+            p.nsSum +=
+                weight * outputFromRender(visibleSurface->ns, visibleSurface->time);
+            p.dzdxSum +=
+                weight * outputFromRender(visibleSurface->dpdx, visibleSurface->time).z;
+            p.dzdySum +=
+                weight * outputFromRender(visibleSurface->dpdy, visibleSurface->time).z;
+        }
+        p.uvSum += weight * visibleSurface->uv;
+
+        SampledSpectrum albedo =
+            visibleSurface->albedo * colorSpace->illuminant.Sample(lambda);
+        RGB albedoRGB = albedo.ToRGB(lambda, *colorSpace);
+        for (int c = 0; c < 3; ++c)
+            p.rgbAlbedoSum[c] += weight * albedoRGB[c];
+    }
+
+    for (int c = 0; c < 3; ++c)
+        p.rgbSum[c] += rgb[c] * weight;
+    p.weightSum += weight;
+}
+
+RestirGBufferFilm::RestirGBufferFilm(FilmBaseParameters p, const AnimatedTransform &outputFromRender,
+                         bool applyInverse, const RGBColorSpace *colorSpace,
+                         Float maxComponentValue, bool writeFP16, Allocator alloc)
+    : FilmBase(p),
+      outputFromRender(outputFromRender),
+      applyInverse(applyInverse),
+      pixels(pixelBounds, alloc),
+      colorSpace(colorSpace),
+      maxComponentValue(maxComponentValue),
+      writeFP16(writeFP16),
+      filterIntegral(filter.Integral()) {
+    CHECK(!pixelBounds.IsEmpty());
+    filmPixelMemory += pixelBounds.Area() * sizeof(Pixel);
+    outputRGBFromSensorRGB = colorSpace->RGBFromXYZ * sensor->XYZFromSensorRGB;
+}
+
+void RestirGBufferFilm::AddSplat(Point2f p, SampledSpectrum v,
+                           const SampledWavelengths &lambda) {
+    // NOTE: same code as RGBFilm::AddSplat()...
+    CHECK(!v.HasNaNs());
+    RGB rgb = sensor->ToSensorRGB(v, lambda);
+    Float m = std::max({rgb.r, rgb.g, rgb.b});
+    if (m > maxComponentValue)
+        rgb *= maxComponentValue / m;
+
+    Point2f pDiscrete = p + Vector2f(0.5, 0.5);
+    Bounds2i splatBounds(Point2i(Floor(pDiscrete - filter.Radius())),
+                         Point2i(Floor(pDiscrete + filter.Radius())) + Vector2i(1, 1));
+    splatBounds = Intersect(splatBounds, pixelBounds);
+    for (Point2i pi : splatBounds) {
+        Float wt = filter.Evaluate(Point2f(p - pi - Vector2f(0.5, 0.5)));
+        if (wt != 0) {
+            Pixel &pixel = pixels[pi];
+            for (int i = 0; i < 3; ++i)
+                pixel.rgbSplat[i].Add(wt * rgb[i]);
+        }
+    }
+}
+
+void RestirGBufferFilm::WriteImage(ImageMetadata metadata, Float splatScale) {
+    Image image = GetImage(&metadata, splatScale);
+    LOG_VERBOSE("Writing image %s with bounds %s", filename, pixelBounds);
+    image.Write(filename, metadata);
+}
+
+Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
+    // Convert image to RGB and compute final pixel values
+    LOG_VERBOSE("Converting image to RGB and computing final weighted pixel values");
+    PixelFormat format = writeFP16 ? PixelFormat::Half : PixelFormat::Float;
+    Image image(format, Point2i(pixelBounds.Diagonal()),
+                {"R",
+                 "G",
+                 "B",
+                 "Albedo.R",
+                 "Albedo.G",
+                 "Albedo.B",
+                 "P.X",
+                 "P.Y",
+                 "P.Z",
+                 "dzdx",
+                 "dzdy",
+                 "N.X",
+                 "N.Y",
+                 "N.Z",
+                 "Ns.X",
+                 "Ns.Y",
+                 "Ns.Z",
+                 "u",
+                 "v",
+                 "Variance.R",
+                 "Variance.G",
+                 "Variance.B",
+                 "RelativeVariance.R",
+                 "RelativeVariance.G",
+                 "RelativeVariance.B"});
+
+    ImageChannelDesc rgbDesc = image.GetChannelDesc({"R", "G", "B"});
+    ImageChannelDesc pDesc = image.GetChannelDesc({"P.X", "P.Y", "P.Z"});
+    ImageChannelDesc dzDesc = image.GetChannelDesc({"dzdx", "dzdy"});
+    ImageChannelDesc nDesc = image.GetChannelDesc({"N.X", "N.Y", "N.Z"});
+    ImageChannelDesc nsDesc = image.GetChannelDesc({"Ns.X", "Ns.Y", "Ns.Z"});
+    ImageChannelDesc uvDesc = image.GetChannelDesc({"u", "v"});
+    ImageChannelDesc albedoRgbDesc =
+        image.GetChannelDesc({"Albedo.R", "Albedo.G", "Albedo.B"});
+    ImageChannelDesc varianceDesc =
+        image.GetChannelDesc({"Variance.R", "Variance.G", "Variance.B"});
+    ImageChannelDesc relVarianceDesc = image.GetChannelDesc(
+        {"RelativeVariance.R", "RelativeVariance.G", "RelativeVariance.B"});
+
+    std::atomic<int> nClamped{0};
+    ParallelFor2D(pixelBounds, [&](Point2i p) {
+        Pixel &pixel = pixels[p];
+        RGB rgb(pixel.rgbSum[0], pixel.rgbSum[1], pixel.rgbSum[2]);
+        RGB albedoRgb(pixel.rgbAlbedoSum[0], pixel.rgbAlbedoSum[1],
+                      pixel.rgbAlbedoSum[2]);
+
+        // Normalize pixel with weight sum
+        Float weightSum = pixel.weightSum, gBufferWeightSum = pixel.gBufferWeightSum;
+        Point3f pt = pixel.pSum;
+        Point2f uv = pixel.uvSum;
+        Float dzdx = pixel.dzdxSum, dzdy = pixel.dzdySum;
+        if (weightSum != 0) {
+            rgb /= weightSum;
+            albedoRgb /= weightSum;
+        }
+        if (gBufferWeightSum != 0) {
+            pt /= gBufferWeightSum;
+            uv /= gBufferWeightSum;
+            dzdx /= gBufferWeightSum;
+            dzdy /= gBufferWeightSum;
+        }
+
+        // Add splat value at pixel
+        for (int c = 0; c < 3; ++c)
+            rgb[c] += splatScale * pixel.rgbSplat[c] / filterIntegral;
+
+        rgb = outputRGBFromSensorRGB * rgb;
+
+        if (writeFP16 && std::max({rgb.r, rgb.g, rgb.b}) > 65504) {
+            if (rgb.r > 65504)
+                rgb.r = 65504;
+            if (rgb.g > 65504)
+                rgb.g = 65504;
+            if (rgb.b > 65504)
+                rgb.b = 65504;
+            ++nClamped;
+        }
+
+        Point2i pOffset(p.x - pixelBounds.pMin.x, p.y - pixelBounds.pMin.y);
+        image.SetChannels(pOffset, rgbDesc, {rgb[0], rgb[1], rgb[2]});
+        image.SetChannels(pOffset, albedoRgbDesc,
+                          {albedoRgb[0], albedoRgb[1], albedoRgb[2]});
+
+        Normal3f n =
+            LengthSquared(pixel.nSum) > 0 ? Normalize(pixel.nSum) : Normal3f(0, 0, 0);
+        Normal3f ns =
+            LengthSquared(pixel.nsSum) > 0 ? Normalize(pixel.nsSum) : Normal3f(0, 0, 0);
+        image.SetChannels(pOffset, pDesc, {pt.x, pt.y, pt.z});
+        image.SetChannels(pOffset, dzDesc, {std::abs(dzdx), std::abs(dzdy)});
+        image.SetChannels(pOffset, nDesc, {n.x, n.y, n.z});
+        image.SetChannels(pOffset, nsDesc, {ns.x, ns.y, ns.z});
+        image.SetChannels(pOffset, uvDesc, {uv[0], uv[1]});
+        image.SetChannels(
+            pOffset, varianceDesc,
+            {pixel.rgbVariance[0].Variance(), pixel.rgbVariance[1].Variance(),
+             pixel.rgbVariance[2].Variance()});
+        image.SetChannels(pOffset, relVarianceDesc,
+                          {pixel.rgbVariance[0].RelativeVariance(),
+                           pixel.rgbVariance[1].RelativeVariance(),
+                           pixel.rgbVariance[2].RelativeVariance()});
+    });
+
+    if (nClamped.load() > 0)
+        Warning("%d pixel values clamped to maximum fp16 value.", nClamped.load());
+
+    metadata->pixelBounds = pixelBounds;
+    metadata->fullResolution = fullResolution;
+    metadata->colorSpace = colorSpace;
+
+    return image;
+}
+
+std::string RestirGBufferFilm::ToString() const {
+    return StringPrintf("[ RestirGBufferFilm %s outputFromRender: %s applyInverse: %s "
+                        "colorSpace: %s maxComponentValue: %f writeFP16: %s ]",
+                        BaseToString(), outputFromRender, applyInverse, *colorSpace,
+                        maxComponentValue, writeFP16);
+}
+
+RestirGBufferFilm *RestirGBufferFilm::Create(const ParameterDictionary &parameters,
+                                 Float exposureTime,
+                                 const CameraTransform &cameraTransform, Filter filter,
+                                 const RGBColorSpace *colorSpace, const FileLoc *loc,
+                                 Allocator alloc) {
+    Float maxComponentValue = parameters.GetOneFloat("maxcomponentvalue", Infinity);
+    bool writeFP16 = parameters.GetOneBool("savefp16", true);
+
+    PixelSensor *sensor =
+        PixelSensor::Create(parameters, colorSpace, exposureTime, loc, alloc);
+
+    FilmBaseParameters filmBaseParameters(parameters, filter, sensor, loc);
+
+    if (!HasExtension(filmBaseParameters.filename, "exr"))
+        ErrorExit(loc, "%s: EXR is the only format supported by the RestirGBufferFilm.",
+                  filmBaseParameters.filename);
+
+    std::string coordinateSystem = parameters.GetOneString("coordinatesystem", "camera");
+    AnimatedTransform outputFromRender;
+    bool applyInverse = false;
+    if (coordinateSystem == "camera") {
+        outputFromRender = cameraTransform.RenderFromCamera();
+        applyInverse = true;
+    } else if (coordinateSystem == "world")
+        outputFromRender = AnimatedTransform(cameraTransform.WorldFromRender());
+    else
+        ErrorExit(loc,
+                  "%s: unknown coordinate system for RestirGBufferFilm. (Expecting \"camera\" "
+                  "or \"world\".)",
+                  coordinateSystem);
+
+    printf("Using test ReSTIRGBufferFilm.\n");
+
+    return alloc.new_object<RestirGBufferFilm>(filmBaseParameters, outputFromRender,
+                                         applyInverse, colorSpace, maxComponentValue,
+                                         writeFP16, alloc);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 // SpectralFilm Method Definitions
 SpectralFilm::SpectralFilm(FilmBaseParameters p, Float lambdaMin, Float lambdaMax,
                            int nBuckets, const RGBColorSpace *colorSpace,
@@ -1066,6 +1335,9 @@ Film Film::Create(const std::string &name, const ParameterDictionary &parameters
                                loc, alloc);
     else if (name == "gbuffer")
         film = GBufferFilm::Create(parameters, exposureTime, cameraTransform, filter,
+                                   parameters.ColorSpace(), loc, alloc);
+    else if (name == "restirgbuffer")
+        film = RestirGBufferFilm::Create(parameters, exposureTime, cameraTransform, filter,
                                    parameters.ColorSpace(), loc, alloc);
     else if (name == "spectral")
         film = SpectralFilm::Create(parameters, exposureTime, filter,

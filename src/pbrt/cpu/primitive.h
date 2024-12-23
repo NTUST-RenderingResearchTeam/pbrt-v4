@@ -51,6 +51,9 @@ class GeometricPrimitive {
     GeometricPrimitive(Shape shape, Material material, Light areaLight,
                        const MediumInterface &mediumInterface,
                        FloatTexture alpha = nullptr);
+    GeometricPrimitive(Shape shape, Material material, int instanceAreaLightsIndex,
+                       const MediumInterface &mediumInterface,
+                       FloatTexture alpha = nullptr);
     Bounds3f Bounds() const;
     pstd::optional<ShapeIntersection> Intersect(const Ray &r, Float tMax) const;
     bool IntersectP(const Ray &r, Float tMax) const;
@@ -60,6 +63,8 @@ class GeometricPrimitive {
     Shape shape;
     Material material;
     Light areaLight;
+    //*Add
+    int instanceAreaLightsIndex;
     MediumInterface mediumInterface;
     FloatTexture alpha;
 };
@@ -83,8 +88,9 @@ class SimplePrimitive {
 class TransformedPrimitive {
   public:
     // TransformedPrimitive Public Methods
-    TransformedPrimitive(Primitive primitive, const Transform *renderFromPrimitive)
-        : primitive(primitive), renderFromPrimitive(renderFromPrimitive) {
+    // TODO?:: instance area light
+    TransformedPrimitive(Primitive primitive, const Transform *renderFromPrimitive/*, std::vector<Light> area*/)
+        : primitive(primitive), renderFromPrimitive(renderFromPrimitive)/*, areaLights(area)*/ {
         primitiveMemory += sizeof(*this);
     }
 
@@ -95,6 +101,8 @@ class TransformedPrimitive {
 
   private:
     // TransformedPrimitive Private Members
+    // TODO:: instance area light
+    std::vector<Light> areaLights;
     Primitive primitive;
     const Transform *renderFromPrimitive;
 };

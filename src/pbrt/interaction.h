@@ -215,11 +215,12 @@ class SurfaceInteraction : public Interaction {
 
     std::string ToString() const;
 
-    void SetIntersectionProperties(Material mtl, Light area,
+    void SetIntersectionProperties(Material mtl, Light area, int instanceIndexs,
                                    const MediumInterface *primMediumInterface,
                                    Medium rayMedium) {
         material = mtl;
         areaLight = area;
+        instanceLightIndexs = instanceIndexs;
         CHECK_GE(Dot(n, shading.n), 0.);
         // Set medium properties at surface intersection
         if (primMediumInterface && primMediumInterface->IsMediumTransition())
@@ -259,6 +260,7 @@ class SurfaceInteraction : public Interaction {
     int faceIndex = 0;
     Material material;
     Light areaLight;
+    int instanceLightIndexs;
     Vector3f dpdx, dpdy;
     Float dudx = 0, dvdx = 0, dudy = 0, dvdy = 0;
 };

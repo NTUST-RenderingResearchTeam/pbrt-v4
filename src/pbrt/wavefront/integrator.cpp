@@ -333,15 +333,17 @@ Float WavefrontPathIntegrator::Render() {
 
     ProgressReporter progress(lastSampleIndex - firstSampleIndex, "Rendering",
                               Options->quiet || Options->interactive, Options->useGPU);
+
+    int sampleStageIndex;
     for (int sampleIndex = firstSampleIndex; sampleIndex < lastSampleIndex || gui;
          ++sampleIndex) {
         // Attempt to work around issue #145.
 #if !(defined(PBRT_IS_WINDOWS) && defined(PBRT_BUILD_GPU_RENDERER) && \
       __CUDACC_VER_MAJOR__ == 11 && __CUDACC_VER_MINOR__ == 1)
         CheckCallbackScope _([&]() {
-            return StringPrintf("Wavefront rendering failed at sample %d. Debug with "
+            return StringPrintf("Wavefront rendering failed at sample %d stage %d. Debug with "
                                 "\"--debugstart %d\"\n",
-                                sampleIndex, sampleIndex);
+                                sampleIndex, sampleStageIndex, sampleIndex);
         });
 #endif
 
@@ -365,6 +367,8 @@ Float WavefrontPathIntegrator::Render() {
                 if (gui)
                     cameraMotion =
                         renderFromCamera * gui->GetCameraTransform() * cameraFromRender;
+
+                sampleStageIndex = 0;
                 GenerateCameraRays(y0, cameraMotion, sampleIndex);
                 Do(
                    "Update camera ray stats",
@@ -397,9 +401,11 @@ Float WavefrontPathIntegrator::Render() {
                        });
 
                     // Follow active ray paths and accumulate radiance estimates
+                    sampleStageIndex = 1;
                     GenerateRaySamples(wavefrontDepth, sampleIndex);
 
                     // Find closest intersections along active rays
+                    sampleStageIndex = 2;
                     aggregate->IntersectClosest(
                                                 maxQueueSize, CurrentRayQueue(wavefrontDepth), escapedRayQueue,
                                                 hitAreaLightQueue, basicEvalMaterialQueue, universalEvalMaterialQueue,
@@ -414,20 +420,26 @@ Float WavefrontPathIntegrator::Render() {
                            });
                     }
 
+                    sampleStageIndex = 3;
                     SampleMediumInteraction(wavefrontDepth);
 
+                    sampleStageIndex = 4;
                     HandleEscapedRays();
 
+                    sampleStageIndex = 5;
                     HandleEmissiveIntersection();
 
                     if (wavefrontDepth == maxDepth)
                         break;
 
+                    sampleStageIndex = 6;
                     EvaluateMaterialsAndBSDFs(wavefrontDepth, cameraMotion);
 
                     // Do immediately so that we have space for shadow rays for subsurface..
+                    sampleStageIndex = 7;
                     TraceShadowRays(wavefrontDepth);
 
+                    sampleStageIndex = 8;
                     SampleSubsurface(wavefrontDepth);
                 }
 

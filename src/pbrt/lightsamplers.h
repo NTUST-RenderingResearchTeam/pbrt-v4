@@ -433,6 +433,7 @@ class ExhaustiveLightSampler {
     std::string ToString() const;
 
   private:
+    WeightedReservoirSampler<Light> reservoir;
     pstd::vector<Light> lights, boundedLights, infiniteLights;
     pstd::vector<LightBounds> lightBounds;
     HashMap<Light, size_t> lightToBoundedIndex;

@@ -17,6 +17,7 @@ namespace pbrt {
 struct SampledLight {
     Light light;
     Float p = 0;
+    WeightedReservoirSampler<Light> reservoir;
     std::string ToString() const;
 };
 

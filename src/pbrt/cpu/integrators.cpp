@@ -64,6 +64,7 @@ Integrator::~Integrator() {}
 
 // ImageTileIntegrator Method Definitions
 void ImageTileIntegrator::Render() {
+    Printf("Scene Light amount: %d\n", lights.size());
     // Handle debugStart, if set
     if (!Options->debugStart.empty()) {
         std::vector<int> c = SplitStringToInts(Options->debugStart, ',');
@@ -284,6 +285,7 @@ void RayIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sampler
 			             .c_str());
     }
     // Add camera ray's contribution to image
+    // write current ray tracing result on image
     camera.GetFilm().AddSample(pPixel, L, lambda, &visibleSurface,
                                cameraSample.filterWeight);
 }
@@ -374,6 +376,1728 @@ std::string Integrator::ToString() const {
         s += StringPrintf("%s, ", l.ToString());
     return s + " ]";
 }
+
+// WavefrontIntegrator Method Definitions
+// TODO:: maybe create a light only aggregate to separete BRDF light sample
+WavefrontIntegrator::WavefrontIntegrator(int fps, int maxDepth, Camera camera, Sampler sampler, Primitive aggregate, /*Primitive lightAggregate,*/
+                    std::vector<Light> lights, const std::string &lightSampleStrategy, bool regularize)
+    : Integrator(aggregate, lights),
+      camera(camera), samplerPrototype(sampler), regularize(regularize), maxDepth(maxDepth), fps(fps),
+      lightSampler(LightSampler::Create(lightSampleStrategy, lights, Allocator())) {}
+
+
+void WavefrontIntegrator::SpawnFirstRays(Point2i pPixel, RayBounceBuffer &buffer, Sampler &sampler, Float aTime){
+    // Sample wavelengths for the ray
+    Float lu = sampler.Get1D();
+    if (Options->disableWavelengthJitter)
+        lu = 0.5;
+    SampledWavelengths lambda = camera.GetFilm().SampleWavelengths(lu);
+
+    // Initialize _CameraSample_ for current sample
+    Filter filter = camera.GetFilm().GetFilter();
+    CameraSample cameraSample = GetCameraSample(sampler, pPixel, filter);
+
+    // Generate camera ray for current sample
+    pstd::optional<CameraRayDifferential> cameraRay =
+        camera.GenerateRayDifferentialAnimated(cameraSample, lambda, aTime);
+
+    // record for motion vector
+    currentPCamera = cameraRay->pCamera;
+
+    buffer.lambda = lambda;
+    buffer.filterWeight = cameraSample.filterWeight;
+    if(cameraRay)
+    {
+        // Scale camera ray differentials based on image sampling rate
+        Float rayDiffScale =
+            std::max<Float>(.125f, 1 / std::sqrt((Float)sampler.SamplesPerPixel()));
+        if (!Options->disablePixelJitter)
+            cameraRay->ray.ScaleDifferentials(rayDiffScale);
+        if(allFinished)
+            allFinished = false;
+        buffer.ray = cameraRay->ray;
+        buffer.weight = cameraRay->weight;
+        buffer.depth++;
+    }
+    else
+        buffer.ray.reset();
+
+}
+void WavefrontIntegrator::IntersectSurfaces(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer){
+    if(!rbBuffer.ray)
+        return;
+
+    pstd::optional<ShapeIntersection> si = Intersect(rbBuffer.ray.value());
+
+    if(si)
+        rsBuffer.isect = si;
+}
+void WavefrontIntegrator::HitEmittedLight(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer){
+    if(!rbBuffer.ray)
+        return;
+    // Add emitted light at intersection point or from the environment
+    if (!rsBuffer.isect) { /*hit background*/
+        // Incorporate emission from infinite lights for escaped ray
+        for (const auto &light : infiniteLights) {
+            SampledSpectrum Le = light.Le(rbBuffer.ray.value(), rbBuffer.lambda);
+            if (rbBuffer.depth == 1 || (rbBuffer.specularBounce && !disableBSDFLightSample))
+                rbBuffer.L += rbBuffer.beta * Le;
+            else if(!disableBSDFLightSample) {
+                // Compute MIS weight for infinite light
+                Float p_l = lightSampler.PMF(rbBuffer.prevIntrCtx, light) *
+                            light.PDF_Li(rbBuffer.prevIntrCtx, rbBuffer.ray->d, true);
+                Float w_b = PowerHeuristic(1, rbBuffer.p_b, 1, p_l);
+
+                rbBuffer.L += rbBuffer.beta * w_b * Le;
+            }
+        }
+
+        rbBuffer.ray.reset();
+        return;
+    }
+
+    // Incorporate emission from surface hit by ray
+    /*check hit light source*/
+    SampledSpectrum Le = rsBuffer.isect->intr.Le(-rbBuffer.ray->d, rbBuffer.lambda);
+    if (Le) { /*hit light source*/
+        if (rbBuffer.depth == 1 || (rbBuffer.specularBounce && !disableBSDFLightSample))
+            rbBuffer.L += rbBuffer.beta * Le;
+        else if(!disableBSDFLightSample) {
+            // Compute MIS weight for area light
+            Light areaLight(rsBuffer.isect->intr.areaLight);
+            Float p_l = lightSampler.PMF(rbBuffer.prevIntrCtx, areaLight) *
+                        areaLight.PDF_Li(rbBuffer.prevIntrCtx, rbBuffer.ray->d, true);
+            Float w_l = PowerHeuristic(1, rbBuffer.p_b, 1, p_l);
+
+            rbBuffer.L += rbBuffer.beta * w_l * Le;
+        }
+    }
+
+    if(rbBuffer.depth >= maxDepth)
+        rbBuffer.ray.reset();
+
+    if(rbBuffer.depth < maxDepth && allFinished)
+        allFinished = false;
+
+}
+// get bsdfs and skip medium surfaces. 
+// maybe merge into IntersectSurfaces?
+void WavefrontIntegrator::GetBSDF(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, ScratchBuffer &scratchBuffer, Sampler &sampler){
+    if(!rbBuffer.ray)
+        return;
+    // Get BSDF and skip over medium boundaries
+    rsBuffer.bsdf = rsBuffer.isect->intr.GetBSDF(rbBuffer.ray.value(), rbBuffer.lambda, camera, scratchBuffer, sampler);
+    if (!rsBuffer.bsdf) {
+        rbBuffer.specularBounce = true;  // disable MIS if the indirect ray hits a light
+        rsBuffer.isect->intr.SkipIntersection(&rbBuffer.ray.value(), rsBuffer.isect->tHit);
+        return;
+    }
+
+    // Possibly regularize the BSDF
+    if (regularize && rbBuffer.anyNonSpecularBounces) {
+        rsBuffer.bsdf->Regularize();
+    }
+}
+void WavefrontIntegrator::SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, Sampler &sampler){
+
+    if(!rbBuffer.ray)
+        return;
+
+    if (!rsBuffer.bsdf)
+        return;
+
+    if (!IsNonSpecular(rsBuffer.bsdf->Flags()))
+        return;
+    // Initialize _LightSampleContext_ for light sampling
+    LightSampleContext ctx(rsBuffer.isect->intr);
+    // Try to nudge the light sampling position to correct side of the surface
+    BxDFFlags flags = rsBuffer.bsdf->Flags();
+    if (IsReflective(flags) && !IsTransmissive(flags))
+        ctx.pi = rsBuffer.isect->intr.OffsetRayOrigin(rsBuffer.isect->intr.wo);
+    else if (IsTransmissive(flags) && !IsReflective(flags))
+        ctx.pi = rsBuffer.isect->intr.OffsetRayOrigin(-rsBuffer.isect->intr.wo);
+
+    // Choose a light source for the direct lighting calculation
+    Float u = sampler.Get1D();
+    rsBuffer.sampledLight = lightSampler.Sample(ctx, u);
+    Point2f uLight = sampler.Get2D();
+    if (!rsBuffer.sampledLight)
+        return;
+
+    // Sample a point on the light source for direct lighting
+    Light light = rsBuffer.sampledLight->light;
+    rsBuffer.ls = light.SampleLi(ctx, uLight, rbBuffer.lambda, true);
+
+}
+// check light occluded and shading
+void WavefrontIntegrator::Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer){
+
+    if(!rbBuffer.ray)
+        return;
+
+    if (!rsBuffer.bsdf)
+        return;
+
+    if (!IsNonSpecular(rsBuffer.bsdf->Flags()))
+        return;
+
+    if (!rsBuffer.sampledLight)
+        return;
+
+    if (!rsBuffer.ls || !rsBuffer.ls->L || rsBuffer.ls->pdf == 0)
+        return;
+    // Evaluate BSDF for light sample and check light visibility
+    Vector3f wo = rsBuffer.isect->intr.wo, wi = rsBuffer.ls->wi;
+    SampledSpectrum f = rsBuffer.bsdf->f(wo, wi) * AbsDot(wi, rsBuffer.isect->intr.shading.n);
+    if (!f || !Unoccluded(rsBuffer.isect->intr, rsBuffer.ls->pLight))
+        return;
+
+    // Return light's contribution to reflected radiance
+    Float p_l = rsBuffer.sampledLight->p * rsBuffer.ls->pdf;
+
+    Light light = rsBuffer.sampledLight->light;
+    // return ls->L * f / p_l;
+    if (IsDeltaLight(light.Type()) || disableBSDFLightSample)
+       rbBuffer.L += rbBuffer.beta * ClampZero(rsBuffer.ls->L) * f / p_l;
+    else {
+       Float p_b = rsBuffer.bsdf->PDF(wo, wi);
+       Float w_l = PowerHeuristic(1, p_l, 1, p_b);
+       rbBuffer.L += rbBuffer.beta * w_l * ClampZero(rsBuffer.ls->L) * f / p_l;
+    }
+}
+void WavefrontIntegrator::SpawnBrdfRays(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, Sampler &sampler){
+    
+    if(!rbBuffer.ray)
+        return;
+
+    if (!rsBuffer.bsdf)
+        return;
+
+    rbBuffer.depth++;
+    if(rbBuffer.depth > maxDepth)
+    {
+        rbBuffer.ray.reset();
+        return;
+    }
+    
+    Vector3f wo = -rbBuffer.ray->d;
+    Float u = sampler.Get1D();
+    pstd::optional<BSDFSample> bs = rsBuffer.bsdf->Sample_f(wo, u, sampler.Get2D());
+    if (!bs)
+        return;
+    // Update path state variables after surface scattering
+    rbBuffer.beta *= bs->f * AbsDot(bs->wi, rsBuffer.isect->intr.shading.n) / bs->pdf;
+    rbBuffer.p_b = bs->pdfIsProportional ? rsBuffer.bsdf->PDF(wo, bs->wi) : bs->pdf;
+    rbBuffer.specularBounce = bs->IsSpecular();
+    rbBuffer.anyNonSpecularBounces |= !bs->IsSpecular();
+    if (bs->IsTransmission())
+        rbBuffer.etaScale *= Sqr(bs->eta);
+    rbBuffer.prevIntrCtx = rsBuffer.isect->intr;
+
+    rbBuffer.ray = rsBuffer.isect->intr.SpawnRay(rbBuffer.ray.value(), rsBuffer.bsdf.value(), bs->wi, bs->flags, bs->eta);
+
+    // Possibly terminate the path with Russian roulette
+    SampledSpectrum rrBeta = rbBuffer.beta * rbBuffer.etaScale;
+    if (rrBeta.MaxComponentValue() < 1 && rbBuffer.depth > 2) {
+        Float q = std::max<Float>(0, 1 - rrBeta.MaxComponentValue());
+        if (sampler.Get1D() < q)
+        {
+            rbBuffer.ray.reset();
+            return;
+        }
+        rbBuffer.beta /= 1 - q;
+    }
+
+    if(allFinished)
+        allFinished = false;    
+}
+
+WavefrontPathIntegrator::WavefrontPathIntegrator(int fps, int maxDepth, Camera camera, Sampler sampler, Primitive aggregate,
+                  std::vector<Light> lights, const std::string &lightSampleStrategy, bool regularize)
+        : WavefrontIntegrator(fps, maxDepth, camera, sampler, aggregate, lights, lightSampleStrategy, regularize) {}
+
+std::unique_ptr<WavefrontPathIntegrator> WavefrontPathIntegrator::Create(
+    const ParameterDictionary &parameters, Camera camera, Sampler sampler,
+    Primitive aggregate, std::vector<Light> lights, const FileLoc *loc) {
+    int maxDepth = parameters.GetOneInt("maxdepth", 5);
+    std::string lightStrategy = parameters.GetOneString("lightsampler", "bvh");
+    bool regularize = parameters.GetOneBool("regularize", false);
+    int fps = parameters.GetOneInt("fps", 24);
+    return std::make_unique<WavefrontPathIntegrator>(fps, maxDepth, camera, sampler, aggregate, lights,
+                                            lightStrategy, regularize);
+}
+
+std::string WavefrontPathIntegrator::ToString() const {
+    return StringPrintf("[ WavefrontPathIntegrator maxDepth: %d ]",
+                        maxDepth);
+}
+
+// *Add
+// WavefrontIntegrator Method Definitions
+void WavefrontPathIntegrator::Render() {
+
+    thread_local Point2i threadPixel;
+    thread_local int threadSampleIndex;
+    int stageIndex;
+    CheckCallbackScope _([&]() {
+        return StringPrintf("Rendering failed at pixel (%d, %d) sample %d stage %d. Debug with "
+                            "\"--debugstart %d,%d,%d\"\n",
+                            threadPixel.x, threadPixel.y, threadSampleIndex, stageIndex,
+                            threadPixel.x, threadPixel.y, threadSampleIndex);
+    });
+
+    Bounds2i pixelBounds = camera.GetFilm().PixelBounds();
+    int spp = samplerPrototype.SamplesPerPixel();
+    int totalFrame = fps * (camera.GetShutterClose() - camera.GetShutterOpen());
+
+    // Declare common variables for rendering image in tiles
+    ThreadLocal<ScratchBuffer> scratchBuffers([]() { return ScratchBuffer(2048 * 2048); });
+    ThreadLocal<Sampler> samplers([this]() { return samplerPrototype.Clone(); });
+    // TODO::divide progress bar more properly
+    ProgressReporter progress(int64_t(spp * totalFrame), "Rendering",
+                              Options->quiet);
+
+    if (Options->recordPixelStatistics)
+        StatsEnablePixelStats(pixelBounds,
+                              RemoveExtension(camera.GetFilm().GetFilename()));
+
+    // // Handle MSE reference image, if provided
+    // pstd::optional<Image> referenceImage;
+    // FILE *mseOutFile = nullptr;
+    // if (!Options->mseReferenceImage.empty()) {
+    //     auto mse = Image::Read(Options->mseReferenceImage);
+    //     referenceImage = mse.image;
+    //
+    //     Bounds2i msePixelBounds =
+    //         mse.metadata.pixelBounds
+    //             ? *mse.metadata.pixelBounds
+    //             : Bounds2i(Point2i(0, 0), referenceImage->Resolution());
+    //     if (!Inside(pixelBounds, msePixelBounds))
+    //         ErrorExit("Output image pixel bounds %s aren't inside the MSE "
+    //                   "image's pixel bounds %s.",
+    //                   pixelBounds, msePixelBounds);
+    //
+    //     // Transform the pixelBounds of the image we're rendering to the
+    //     // coordinate system with msePixelBounds.pMin at the origin, which
+    //     // in turn gives us the section of the MSE image to crop. (This is
+    //     // complicated by the fact that Image doesn't support pixel
+    //     // bounds...)
+    //     Bounds2i cropBounds(Point2i(pixelBounds.pMin - msePixelBounds.pMin),
+    //                         Point2i(pixelBounds.pMax - msePixelBounds.pMin));
+    //     *referenceImage = referenceImage->Crop(cropBounds);
+    //     CHECK_EQ(referenceImage->Resolution(), Point2i(pixelBounds.Diagonal()));
+    //
+    //     mseOutFile = FOpenWrite(Options->mseReferenceOutput);
+    //     if (!mseOutFile)
+    //         ErrorExit("%s: %s", Options->mseReferenceOutput, ErrorString());
+    // }
+
+    // Connect to display server if needed
+    if (!Options->displayServer.empty()) {
+        Film film = camera.GetFilm();
+        DisplayDynamic(film.GetFilename(), Point2i(pixelBounds.Diagonal()),
+                       {"R", "G", "B"},
+                       [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
+                           int index = 0;
+                           for (Point2i p : b) {
+                               RGB rgb = film.GetPixelRGB(pixelBounds.pMin + p,
+                                                          2.f);
+                               for (int c = 0; c < 3; ++c)
+                                   displayValue[c][index] = rgb[c];
+                               ++index;
+                           }
+                       });
+    }
+
+    int currentSampleIndex = 0;
+    Float currentTime = 0.f;
+
+    // Render image in waves
+    while (currentSampleIndex < spp) {
+        // Render current wave's image tiles in parallel
+        // TODO:: maybe use ParallelFor1D to properly skip pixel that finished soon.
+        threadSampleIndex = currentSampleIndex;
+
+        // reset rayStageBuffer
+        rayStageBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
+        // reset rayBounceBuffer
+        rayBounceBuffers = Array2D<RayBounceBuffer>(camera.GetFilm().PixelBounds());
+
+        stageIndex = 0;
+        allFinished = true;
+
+        ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+            Sampler &sampler = samplers.Get();
+
+            for (Point2i pPixel : tileBounds) {
+                StatsReportPixelStart(pPixel);
+                threadPixel = pPixel;
+                
+                RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+
+                // Render samples in pixel _pPixel_
+                sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                SpawnFirstRays(pPixel, rbBuffer, sampler, currentTime);
+                
+                rbBuffer.dim = sampler.GetDim();
+                
+                StatsReportPixelEnd(pPixel);
+            }
+        });
+        
+        while(!allFinished){
+            // reset rayStageBuffer
+            rayStageBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
+
+            stageIndex = 1;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+            for (Point2i pPixel : tileBounds) {
+                StatsReportPixelStart(pPixel);
+                threadPixel = pPixel;
+
+                RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                RayStageBuffer &rsBuffer = rayStageBuffers[pPixel];
+
+                IntersectSurfaces(rbBuffer, rsBuffer);
+                
+                StatsReportPixelEnd(pPixel);
+                }
+            });
+            
+            stageIndex = 2;
+            allFinished = true;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = rayStageBuffers[pPixel];
+
+                    HitEmittedLight(rbBuffer, rsBuffer);
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+            if(allFinished)
+                break;
+
+            stageIndex = 3;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                // Render image tile given by _tileBounds_
+                ScratchBuffer &scratchBuffer = scratchBuffers.Get();
+                Sampler &sampler = samplers.Get();
+
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = rayStageBuffers[pPixel];
+                    // Render samples in pixel _pPixel_
+                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                    GetBSDF(rbBuffer, rsBuffer, scratchBuffer, sampler);
+
+                    rbBuffer.dim = sampler.GetDim();
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+
+            });
+
+            stageIndex = 4;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                Sampler &sampler = samplers.Get();
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = rayStageBuffers[pPixel];
+
+                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                    SampleLights(rbBuffer, rsBuffer, sampler);
+
+                    rbBuffer.dim = sampler.GetDim();
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+
+            stageIndex = 5;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = rayStageBuffers[pPixel];
+
+                    Shading(rbBuffer, rsBuffer);
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+
+            stageIndex = 6;
+            allFinished = true;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                Sampler &sampler = samplers.Get();
+                ScratchBuffer &scratchBuffer = scratchBuffers.Get();
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = rayStageBuffers[pPixel];
+
+                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                    SpawnBrdfRays(rbBuffer, rsBuffer, sampler);
+
+                    rbBuffer.dim = sampler.GetDim();
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+            if(allFinished)
+                break;
+
+        }
+
+        scratchBuffers.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
+
+        stageIndex = 7;
+        ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+            for (Point2i pPixel : tileBounds) {
+                StatsReportPixelStart(pPixel);
+                threadPixel = pPixel;
+
+                RayBounceBuffer &buffer = rayBounceBuffers[pPixel];
+                SampledSpectrum L = buffer.weight * buffer.L;
+
+                // Issue warning if unexpected radiance value is returned
+                if (L.HasNaNs()) {
+                    LOG_ERROR("Not-a-number radiance value returned for pixel (%d, "
+                            "%d), sample %d. Setting to black.",
+                            pPixel.x, pPixel.y, currentSampleIndex);
+                    L = SampledSpectrum(0.f);
+                } else if (IsInf(L.y(buffer.lambda))) {
+                    LOG_ERROR("Infinite radiance value returned for pixel (%d, %d), "
+                            "sample %d. Setting to black.",
+                            pPixel.x, pPixel.y, currentSampleIndex);
+                    L = SampledSpectrum(0.f);
+                }
+
+                VisibleSurface visibleSurface;
+                camera.GetFilm().AddSample(pPixel, L, buffer.lambda, &visibleSurface,
+                                buffer.filterWeight);
+                
+                StatsReportPixelEnd(pPixel);
+            }
+        });
+        
+        
+        // Update start and end wave
+        progress.Update(1);
+        currentSampleIndex++;
+
+        // Optionally write current image to disk
+        if (currentSampleIndex == spp || Options->writePartialImages/* || referenceImage*/) {
+            LOG_VERBOSE("Writing image with spp = %d", currentSampleIndex);
+            ImageMetadata metadata;
+            metadata.renderTimeSeconds = progress.ElapsedSeconds();
+            metadata.samplesPerPixel = currentSampleIndex;
+            // if (referenceImage) {
+            //     ImageMetadata filmMetadata;
+            //     Image filmImage =
+            //         camera.GetFilm().GetImage(&filmMetadata, 1.f / currentSampleIndex);
+            //     ImageChannelValues mse =
+            //         filmImage.MSE(filmImage.AllChannelsDesc(), *referenceImage);
+            //     fprintf(mseOutFile, "%d, %.9g\n", currentSampleIndex, mse.Average());
+            //     metadata.MSE = mse.Average();
+            //     fflush(mseOutFile);
+            // }
+            if (currentSampleIndex == spp || Options->writePartialImages) {
+                camera.InitMetadata(&metadata);
+                camera.GetFilm().WriteImage(metadata, 1.0f / currentSampleIndex);
+            }
+        }
+
+        if (currentSampleIndex == spp){
+            
+            currentTime += 1.0f / totalFrame;
+            currentSampleIndex = 0;
+
+            if(currentTime == 1.0f)
+                progress.Done();
+        }
+    }
+
+
+
+    // if (mseOutFile)
+    //     fclose(mseOutFile);
+    DisconnectFromDisplayServer();
+    LOG_VERBOSE("Rendering finished");
+}
+
+///////////////////////////////////////ReSTIR Integrator///////////////////////////////////////////////
+
+ReSTIRIntegrator::ReSTIRIntegrator(int fps,int maxDepth, RestirParameter restirSetting, Camera camera, Sampler sampler, Primitive aggregate,
+                  std::vector<Light> lights, const std::string &lightSampleStrategy, bool regularize)
+        : WavefrontIntegrator(fps, maxDepth, camera, sampler, aggregate, lights, lightSampleStrategy, regularize),
+         restirSetting(restirSetting) {}
+
+std::unique_ptr<ReSTIRIntegrator> ReSTIRIntegrator::Create(
+    const ParameterDictionary &parameters, Camera camera, Sampler sampler,
+    Primitive aggregate, std::vector<Light> lights, const FileLoc *loc) {
+    int maxDepth = parameters.GetOneInt("maxdepth", 5);
+    std::string lightStrategy = parameters.GetOneString("lightsampler", "bvh");
+    bool regularize = parameters.GetOneBool("regularize", false);
+    int fps = parameters.GetOneInt("fps", 24);
+    RestirParameter restirSetting;
+
+    std::string restirStrategy = parameters.GetOneString("restirmode", "spatiotemporal");
+    if(restirStrategy == "temporal")
+        restirSetting.isTemporal = true;
+    else if(restirStrategy == "spatial")
+        restirSetting.isSpatial = true;
+    else if(restirStrategy == "spatiotemporal")
+        restirSetting.isSpatiotemporal = true;
+    else{
+        Error(R"(ReSTIR mode "%s" unknown. Using "Spatiotemporal".)",
+              restirStrategy.c_str());
+        restirSetting.isSpatiotemporal = true;
+    }
+    restirSetting.numLocalLightDISample = parameters.GetOneInt("numLocalLightDISample", 8);
+
+    restirSetting.Nthreshold = parameters.GetOneFloat("Nthreshold", 0.2f);
+    restirSetting.Dthreshold = parameters.GetOneFloat("Dthreshold", 0.1f);
+
+    restirSetting.spatialRadius = parameters.GetOneFloat("spatialRadius", 16.0f);
+    restirSetting.numSpatialSamples = parameters.GetOneInt("numSpatialSamples", 8);
+    restirSetting.maxSpatialDistance = parameters.GetOneFloat("maxSpatialDistance", 16.0f);
+
+    restirSetting.maxAge = parameters.GetOneInt("maxAge", 16);
+    restirSetting.historyLimit = parameters.GetOneInt("historyLimit", 20);
+
+    return std::make_unique<ReSTIRIntegrator>(fps, maxDepth, restirSetting, camera, sampler, aggregate, lights,
+                                            lightStrategy, regularize);
+}
+
+std::string ReSTIRIntegrator::ToString() const {
+    return StringPrintf("[ ReSTIRIntegrator maxDepth: %d ]",
+                        maxDepth);
+}
+
+bool ReSTIRIntegrator::streamReservoir(DIReservoir &reservoir, float targetPdf, float sourcePdf, Sampler &sampler){
+    float risWeight = targetPdf / sourcePdf;
+
+    reservoir.M++;
+    reservoir.weightSum += risWeight;
+
+    Float rng = sampler.Get1D();
+
+    if(rng * reservoir.weightSum < risWeight)
+        return true;
+        
+    return false;
+}
+
+//TODO:: use mis to combine different ris
+bool ReSTIRIntegrator::combineReservoir(DIReservoir &dst, const DIReservoir &src, float targetPdf, Sampler &sampler){
+    float risWeight = targetPdf * src.W * src.M;
+    //float risWeight = src.weightSum;
+
+    int M = dst.M + src.M;
+
+    if(streamReservoir(dst, risWeight, 1.0f, sampler)){
+        dst.M = M;
+        dst.targetPdf = targetPdf;
+        dst.visibility = src.visibility;
+        if(!restirSetting.reUseVisibility){
+            dst.isVisCheck = false;
+            dst.visibility = true;
+        }
+        return true;
+    }
+
+    dst.M = M;
+    return false;
+}
+
+void ReSTIRIntegrator::finalResampling(DIReservoir &reservoir, const RayStageBuffer &rsBuffer, bool checkVisibility, bool discardIfInvisible){
+    if(!reservoir.ls || !reservoir.ls->L || reservoir.ls->pdf == 0){
+        reservoir.W = 0;
+        return;
+    }
+
+    if(reservoir.weightSum == 0 || reservoir.M == 0){
+        reservoir.W = 0;
+        return;
+    }
+    reservoir.W = (reservoir.weightSum / reservoir.M) / reservoir.targetPdf;
+    reservoir.weightSum = reservoir.targetPdf * reservoir.W * reservoir.M;
+
+    if(!reservoir.isVisCheck && checkVisibility){
+        reservoir.isVisCheck = true;
+        storeVisibility(reservoir, Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight), discardIfInvisible);
+    }
+}
+
+void ReSTIRIntegrator::storeVisibility(DIReservoir &reservoir, bool visibility, bool discardIfInvisible){
+    reservoir.visibility = visibility;
+
+    // reservoir.spatialDistance = Point2i();
+    // reservoir.age = 0;
+
+    if (discardIfInvisible && !visibility)
+    {
+        // Keep M for correct resampling, remove the actual sample
+        reservoir.sampledLight.reset();
+        reservoir.ls.reset();
+        reservoir.W = 0;
+        reservoir.weightSum = 0;
+    }
+}
+
+bool ReSTIRIntegrator::checkNormalSimilar(Normal3f n1, Normal3f n2, float threshold){
+    return Dot(n1, n2) >= threshold;
+}
+
+bool ReSTIRIntegrator::checkDepthSimilar(Float d1, Float d2, float threshold){
+    return std::abs(d1 - d2) <= threshold * std::max(d1, d2);
+}
+
+ // combine reservoir temporal
+void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler){
+    
+    if(!dstRb.ray)
+        return;
+
+    if (!dstRs.bsdf)
+        return;
+
+    if (!dstRs.isect)
+        return;
+
+    //TODO:: motion vector to get pPixel
+    // Float prevTime = currentTime -= 1.0f / totalFrame;
+    // if(prevTime < 0.f)
+    //     return;
+    //
+    // Point3f prevPos = camera.reProjected(currentPCamera, prevTime);
+
+    Point2i prevPixel = pPixel;
+
+    DIReservoir& prevReservoir = prevReservoirs[prevPixel];
+    const RayStageBuffer& prevRs = prevRsBuffers[prevPixel];
+    // dstReservoir.weightSum = dstReservoir.targetPdf * dstReservoir.W * dstReservoir.M;
+    prevReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * dstReservoir.M), prevReservoir.M);
+
+    if (!prevRs.bsdf){
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+    if (!prevRs.isect){
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+
+    Float rng = sampler.Get1D();
+    if(prevReservoir.age > restirSetting.maxAge  * (0.5 + rng * 0.5)){
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+
+    if(!prevReservoir.M){
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+
+    // TODO:: check prevRs.isect->tHit, dstRs.isect->tHit is depth?
+    if(!checkNormalSimilar(prevRs.isect.value().intr.n, dstRs.isect.value().intr.n, restirSetting.Nthreshold)
+        || !checkDepthSimilar(prevRs.isect->tHit, dstRs.isect->tHit, restirSetting.Dthreshold)){
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+    if(!prevReservoir.targetPdf){
+        dstReservoir.M += prevReservoir.M;
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+
+    pstd::optional<SampledLight> sampledLight = prevReservoir.sampledLight;
+    if (!sampledLight || !sampledLight->p){
+        dstReservoir.M += prevReservoir.M;
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+    LightSampleContext ctx(dstRs.isect->intr);
+    // Try to nudge the light sampling position to correct side of the surface
+    BxDFFlags flags = dstRs.bsdf->Flags();
+    if (IsReflective(flags) && !IsTransmissive(flags))
+        ctx.pi = dstRs.isect->intr.OffsetRayOrigin(dstRs.isect->intr.wo);
+    else if (IsTransmissive(flags) && !IsReflective(flags))
+        ctx.pi = dstRs.isect->intr.OffsetRayOrigin(-dstRs.isect->intr.wo);
+
+    Point2f uLight = prevReservoir.uv;
+    Light light = sampledLight->light;
+    pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, dstRb.lambda, true);
+    if (!ls || !ls->L || ls->pdf == 0){
+        dstReservoir.M += prevReservoir.M;
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+
+    // if(reUseVisibility && !prevReservoir.visibility){
+    //     dstReservoir.M += prevReservoir.M;
+    //     dstReservoir.age += prevReservoir.age;
+    //     dstReservoir.age++;
+    //     finalResampling(dstReservoir, dstRs);
+    //     return;
+    // }
+
+    // Evaluate BSDF for light sample and check light visibility
+    Vector3f wo = dstRs.isect->intr.wo, wi = ls->wi;
+    pstd::optional<BSDF> bsdf = dstRs.bsdf;
+    SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, dstRs.isect->intr.shading.n);
+    if(!f){
+        dstReservoir.M += prevReservoir.M;
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+    // RIS target PDF
+    Float target_p = 0.0f;
+    // RIS f(x)
+    SampledSpectrum w_ld = ClampZero(ls->L) * f;
+
+    target_p += w_ld.ToLuminance(dstRb.lambda);
+
+    if(combineReservoir(dstReservoir, prevReservoir, target_p, sampler))
+    {
+        dstReservoir.uv = uLight;
+        dstReservoir.sampledLight = sampledLight;
+        dstReservoir.ls = ls;
+        dstReservoir.age = prevReservoir.age;
+        dstReservoir.age++;
+    }
+
+    // unbiased test
+    // int unBiasedM = 0;
+    // {
+    //     pstd::optional<SampledLight> sampledLight = dstReservoir.sampledLight;
+    //     if (!sampledLight || !sampledLight->p)
+    //         continue;
+    //     // Sample a point on the light source for direct lighting
+    //     // Initialize _LightSampleContext_ for light sampling
+    //     LightSampleContext ctx(prevRs.isect->intr);
+    //     // Try to nudge the light sampling position to correct side of the surface
+    //     BxDFFlags flags = prevRs.bsdf->Flags();
+    //     if (IsReflective(flags) && !IsTransmissive(flags))
+    //         ctx.pi = prevRs.isect->intr.OffsetRayOrigin(prevRs.isect->intr.wo);
+    //     else if (IsTransmissive(flags) && !IsReflective(flags))
+    //         ctx.pi = prevRs.isect->intr.OffsetRayOrigin(-prevRs.isect->intr.wo);
+    //
+    //     Point2f uLight = dstReservoir.uv;
+    //     Light light = sampledLight->light;
+    //     pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, dstRb.lambda, true);
+    //     if (!ls || !ls->L || ls->pdf == 0)
+    //         continue;
+    //     // Evaluate BSDF for light sample and check light visibility
+    //     Vector3f wo = prevRs.isect->intr.wo, wi = Normalize(ls->pLight.p() - prevRs.isect.value().intr.p());
+    //     pstd::optional<BSDF> bsdf = prevRs.bsdf;
+    //     SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, prevRs.isect->intr.shading.n);
+    //     if(!f){
+    //         continue;
+    //     }
+    //
+    //     // RIS target PDF
+    //     Float target_p = 0.0f;
+    //     // RIS f(x)
+    //     SampledSpectrum w_ld = ClampZero(ls->L) * f;
+    //
+    //     target_p += w_ld.ToLuminance(dstRb.lambda);
+    //
+    //     if(target_p > 0)
+    //         unBiasedM += prevReservoir.M;
+    // }
+    //
+    // dstReservoir.M = unBiasedM;
+
+    finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+}
+
+// combine reservoir spatial
+void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir> &srcReservoir, const Array2D<RayStageBuffer> &srcRs, const Array2D<RayBounceBuffer> &srcRb, DIReservoir &dstReservoir, Sampler &sampler){
+    const RayStageBuffer& centerRs = srcRs[pPixel];
+    const RayBounceBuffer& centerRb = srcRb[pPixel];
+    dstReservoir = srcReservoir[pPixel];
+    
+    if(!centerRb.ray)
+        return;
+
+    if (!centerRs.bsdf)
+        return;
+
+    if (!centerRs.isect)
+        return;
+
+    // if(!isTemporal)
+    //     dstReservoir.weightSum = dstReservoir.targetPdf * dstReservoir.W * dstReservoir.M;
+    // std::vector<Point2i> offsetPixelUnbiased;
+
+    // Sample a point on the light source for direct lighting
+    // Initialize _LightSampleContext_ for light sampling
+    LightSampleContext ctx(centerRs.isect->intr);
+    // Try to nudge the light sampling position to correct side of the surface
+    BxDFFlags flags = centerRs.bsdf->Flags();
+    if (IsReflective(flags) && !IsTransmissive(flags))
+        ctx.pi = centerRs.isect->intr.OffsetRayOrigin(centerRs.isect->intr.wo);
+    else if (IsTransmissive(flags) && !IsReflective(flags))
+        ctx.pi = centerRs.isect->intr.OffsetRayOrigin(-centerRs.isect->intr.wo);
+
+    for (size_t i = 0; i < restirSetting.numSpatialSamples; i++)
+    {
+        Point2f uv = sampler.Get2D();
+        Point2i offsetPixel = pPixel + Point2i(((uv - Point2f(0.5f, 0.5f)) * restirSetting.spatialRadius ));
+        offsetPixel.x = pbrt::Clamp(offsetPixel.x, 0, srcReservoir.XSize() - 1);
+        offsetPixel.y = pbrt::Clamp(offsetPixel.y, 0, srcReservoir.YSize() - 1);
+
+        if(offsetPixel == pPixel)
+            continue;
+
+        const RayStageBuffer& spatialRsBuffer = srcRs[offsetPixel];
+        const RayBounceBuffer& spatialRbBuffer = srcRb[offsetPixel];
+        DIReservoir spatialReservoir = srcReservoir[offsetPixel];
+        spatialReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * dstReservoir.M), spatialReservoir.M);
+
+        if(!spatialRbBuffer.ray)
+            continue;
+
+        if(!spatialRsBuffer.bsdf)
+            continue;
+
+        if(!spatialRsBuffer.isect)
+            continue;
+
+        if(!spatialReservoir.M)
+            continue;
+
+        // TODO:: check prevRs.isect->tHit, dstRs.isect->tHit is depth?
+        if(!checkNormalSimilar(spatialRsBuffer.isect.value().intr.n, centerRs.isect.value().intr.n, restirSetting.Nthreshold)
+            || !checkDepthSimilar(spatialRsBuffer.isect->tHit, centerRs.isect->tHit, restirSetting.Dthreshold))
+            continue;
+
+        // offsetPixelUnbiased.push_back(offsetPixel);
+
+        
+
+        if(!spatialReservoir.targetPdf){
+            dstReservoir.M += spatialReservoir.M;
+            continue;
+        }
+
+        pstd::optional<SampledLight> sampledLight = spatialReservoir.sampledLight;
+        if (!sampledLight || !sampledLight->p){
+            dstReservoir.M += spatialReservoir.M;
+            continue;
+        }
+
+
+        Point2f uLight = spatialReservoir.uv;
+        Light light = sampledLight->light;
+        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, centerRb.lambda, true);
+        if (!ls || !ls->L || ls->pdf == 0){
+            dstReservoir.M += spatialReservoir.M;
+            continue;
+        }
+
+        // if(reUseVisibility && !spatialReservoir.visibility){
+        //     dstReservoir.M += spatialReservoir.M;
+        //     continue;
+        // }
+
+        // Evaluate BSDF for light sample and check light visibility
+        Vector3f wo = centerRs.isect->intr.wo, wi = ls->wi;
+        pstd::optional<BSDF> bsdf = centerRs.bsdf;
+        SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, centerRs.isect->intr.shading.n);
+        if(!f){
+            dstReservoir.M += spatialReservoir.M;
+            continue;
+        }
+
+        // RIS target PDF
+        Float target_p = 0.0f;
+        // RIS f(x)
+        SampledSpectrum w_ld = ClampZero(ls->L) * f;
+
+        target_p += w_ld.ToLuminance(centerRb.lambda);
+
+        if(combineReservoir(dstReservoir, spatialReservoir, target_p, sampler))
+        {
+            dstReservoir.uv = uLight;
+            dstReservoir.sampledLight = sampledLight;
+            dstReservoir.ls = ls;
+            dstReservoir.spatialDistance = spatialReservoir.spatialDistance + offsetPixel;
+            dstReservoir.age = spatialReservoir.age;
+            dstReservoir.age++;
+        }
+    }
+
+    // unbiased test
+    // int unBiasedM = 0;
+    // for (size_t i = 0; i < offsetPixelUnbiased.size(); i++)
+    // {
+    //     const RayStageBuffer& unBiasedRsBuffer = srcRs[offsetPixelUnbiased[i]];
+    //     const RayBounceBuffer& unBiasedRbBuffer = srcRb[offsetPixelUnbiased[i]];
+    //     const DIReservoir& unBiasedReservoir = srcReservoir[offsetPixelUnbiased[i]];
+    //
+    //     pstd::optional<SampledLight> sampledLight = dstReservoir.sampledLight;
+    //     if (!sampledLight || !sampledLight->p)
+    //         continue;
+    //     // Sample a point on the light source for direct lighting
+    //     // Initialize _LightSampleContext_ for light sampling
+    //     LightSampleContext ctx(unBiasedRsBuffer.isect->intr);
+    //     // Try to nudge the light sampling position to correct side of the surface
+    //     BxDFFlags flags = unBiasedRsBuffer.bsdf->Flags();
+    //     if (IsReflective(flags) && !IsTransmissive(flags))
+    //         ctx.pi = unBiasedRsBuffer.isect->intr.OffsetRayOrigin(unBiasedRsBuffer.isect->intr.wo);
+    //     else if (IsTransmissive(flags) && !IsReflective(flags))
+    //         ctx.pi = unBiasedRsBuffer.isect->intr.OffsetRayOrigin(-unBiasedRsBuffer.isect->intr.wo);
+    //
+    //     Point2f uLight = dstReservoir.uv;
+    //     Light light = sampledLight->light;
+    //     pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, unBiasedRbBuffer.lambda, true);
+    //     if (!ls || !ls->L || ls->pdf == 0)
+    //         continue;
+    //     // Evaluate BSDF for light sample and check light visibility
+    //     Vector3f wo = unBiasedRsBuffer.isect->intr.wo, wi = Normalize(ls->pLight.p() - unBiasedRsBuffer.isect.value().intr.p());
+    //     pstd::optional<BSDF> bsdf = unBiasedRsBuffer.bsdf;
+    //     SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, unBiasedRsBuffer.isect->intr.shading.n);
+    //     if(!f){
+    //         continue;
+    //     }
+    //
+    //     // RIS target PDF
+    //     Float target_p = 0.0f;
+    //     // RIS f(x)
+    //     SampledSpectrum w_ld = ClampZero(ls->L) * f;
+    //
+    //     target_p += w_ld.ToLuminance(unBiasedRbBuffer.lambda);
+    //
+    //     if(target_p > 0)
+    //         unBiasedM += unBiasedReservoir.M;
+    // }
+    //
+    // dstReservoir.M = unBiasedM;
+
+    finalResampling(dstReservoir, centerRs, true, restirSetting.reUseVisibility);
+}
+
+void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler){
+    if(!dstRb.ray)
+        return;
+
+    if (!dstRs.bsdf)
+        return;
+
+    if (!dstRs.isect)
+        return;
+
+    //TODO:: motion vector to get pPixel
+    // Float prevTime = currentTime -= 1.0f / totalFrame;
+    // if(prevTime < 0.f)
+    //     return;
+    //
+    // Point3f prevPos = camera.reProjected(currentPCamera, prevTime);
+    Point2i prevPixel = pPixel;
+
+    // Initialize _LightSampleContext_ for light sampling
+    LightSampleContext ctx(dstRs.isect->intr);
+    // Try to nudge the light sampling position to correct side of the surface
+    BxDFFlags flags = dstRs.bsdf->Flags();
+    if (IsReflective(flags) && !IsTransmissive(flags))
+        ctx.pi = dstRs.isect->intr.OffsetRayOrigin(dstRs.isect->intr.wo);
+    else if (IsTransmissive(flags) && !IsReflective(flags))
+        ctx.pi = dstRs.isect->intr.OffsetRayOrigin(-dstRs.isect->intr.wo);
+
+    for (size_t i = 0; i < restirSetting.numSpatialSamples; i++)
+    {
+        Point2i offsetPixel;
+        if(i == 0)
+            offsetPixel = prevPixel;
+        else{
+            Point2f uv = sampler.Get2D();
+            offsetPixel = pPixel + Point2i(((uv - Point2f(0.5f, 0.5f)) * restirSetting.spatialRadius ));
+            offsetPixel.x = pbrt::Clamp(offsetPixel.x, 0, prevReservoirs.XSize() - 1);
+            offsetPixel.y = pbrt::Clamp(offsetPixel.y, 0, prevReservoirs.YSize() - 1);
+        }
+        
+        if(i != 0 && offsetPixel == pPixel)
+            continue;
+
+        const RayStageBuffer& spatialRsBuffer = prevRsBuffers[offsetPixel];
+        DIReservoir spatialReservoir = prevReservoirs[offsetPixel];
+        spatialReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * dstReservoir.M), spatialReservoir.M);
+
+        if(!spatialRsBuffer.bsdf)
+            continue;
+
+        if(!spatialRsBuffer.isect)
+            continue;
+
+        if(!spatialReservoir.M)
+            continue;
+
+        // TODO:: check prevRs.isect->tHit, dstRs.isect->tHit is depth?
+        if(!checkNormalSimilar(spatialRsBuffer.isect.value().intr.n, dstRs.isect.value().intr.n, restirSetting.Nthreshold)
+            || !checkDepthSimilar(spatialRsBuffer.isect->tHit, dstRs.isect->tHit, restirSetting.Dthreshold))
+            continue;
+
+        // offsetPixelUnbiased.push_back(offsetPixel);
+
+        
+
+        if(!spatialReservoir.targetPdf){
+            dstReservoir.M += spatialReservoir.M;
+            continue;
+        }
+
+        pstd::optional<SampledLight> sampledLight = spatialReservoir.sampledLight;
+        if (!sampledLight || !sampledLight->p){
+            dstReservoir.M += spatialReservoir.M;
+            continue;
+        }
+
+
+        Point2f uLight = spatialReservoir.uv;
+        Light light = sampledLight->light;
+        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, dstRb.lambda, true);
+        if (!ls || !ls->L || ls->pdf == 0){
+            dstReservoir.M += spatialReservoir.M;
+            continue;
+        }
+
+        // if(reUseVisibility && !spatialReservoir.visibility){
+        //     dstReservoir.M += spatialReservoir.M;
+        //     continue;
+        // }
+
+        // Evaluate BSDF for light sample and check light visibility
+        Vector3f wo = dstRs.isect->intr.wo, wi = ls->wi;
+        pstd::optional<BSDF> bsdf = dstRs.bsdf;
+        SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, dstRs.isect->intr.shading.n);
+        if(!f){
+            dstReservoir.M += spatialReservoir.M;
+            continue;
+        }
+
+        // RIS target PDF
+        Float target_p = 0.0f;
+        // RIS f(x)
+        SampledSpectrum w_ld = ClampZero(ls->L) * f;
+
+        target_p += w_ld.ToLuminance(dstRb.lambda);
+
+        if(combineReservoir(dstReservoir, spatialReservoir, target_p, sampler))
+        {
+            dstReservoir.uv = uLight;
+            dstReservoir.sampledLight = sampledLight;
+            dstReservoir.ls = ls;
+            dstReservoir.spatialDistance = spatialReservoir.spatialDistance + offsetPixel;
+            dstReservoir.age = spatialReservoir.age;
+            dstReservoir.age++;
+        }
+    }
+
+    // unbiased test
+    // int unBiasedM = 0;
+    // for (size_t i = 0; i < offsetPixelUnbiased.size(); i++)
+    // {
+    //     const RayStageBuffer& unBiasedRsBuffer = srcRs[offsetPixelUnbiased[i]];
+    //     const RayBounceBuffer& unBiasedRbBuffer = srcRb[offsetPixelUnbiased[i]];
+    //     const DIReservoir& unBiasedReservoir = srcReservoir[offsetPixelUnbiased[i]];
+    //
+    //     pstd::optional<SampledLight> sampledLight = dstReservoir.sampledLight;
+    //     if (!sampledLight || !sampledLight->p)
+    //         continue;
+    //     // Sample a point on the light source for direct lighting
+    //     // Initialize _LightSampleContext_ for light sampling
+    //     LightSampleContext ctx(unBiasedRsBuffer.isect->intr);
+    //     // Try to nudge the light sampling position to correct side of the surface
+    //     BxDFFlags flags = unBiasedRsBuffer.bsdf->Flags();
+    //     if (IsReflective(flags) && !IsTransmissive(flags))
+    //         ctx.pi = unBiasedRsBuffer.isect->intr.OffsetRayOrigin(unBiasedRsBuffer.isect->intr.wo);
+    //     else if (IsTransmissive(flags) && !IsReflective(flags))
+    //         ctx.pi = unBiasedRsBuffer.isect->intr.OffsetRayOrigin(-unBiasedRsBuffer.isect->intr.wo);
+    //
+    //     Point2f uLight = dstReservoir.uv;
+    //     Light light = sampledLight->light;
+    //     pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, unBiasedRbBuffer.lambda, true);
+    //     if (!ls || !ls->L || ls->pdf == 0)
+    //         continue;
+    //     // Evaluate BSDF for light sample and check light visibility
+    //     Vector3f wo = unBiasedRsBuffer.isect->intr.wo, wi = Normalize(ls->pLight.p() - unBiasedRsBuffer.isect.value().intr.p());
+    //     pstd::optional<BSDF> bsdf = unBiasedRsBuffer.bsdf;
+    //     SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, unBiasedRsBuffer.isect->intr.shading.n);
+    //     if(!f){
+    //         continue;
+    //     }
+    //
+    //     // RIS target PDF
+    //     Float target_p = 0.0f;
+    //     // RIS f(x)
+    //     SampledSpectrum w_ld = ClampZero(ls->L) * f;
+    //
+    //     target_p += w_ld.ToLuminance(unBiasedRbBuffer.lambda);
+    //
+    //     if(target_p > 0)
+    //         unBiasedM += unBiasedReservoir.M;
+    // }
+    //
+    // dstReservoir.M = unBiasedM;
+
+    finalResampling(dstReservoir, dstRs, true, restirSetting.reUseVisibility);
+}
+
+// sample light with WRS
+void ReSTIRIntegrator::SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir &reservoir, Sampler &sampler){
+    if(!rbBuffer.ray)
+        return;
+
+    if (!rsBuffer.bsdf)
+        return;
+
+    if (!IsNonSpecular(rsBuffer.bsdf->Flags()))
+        return;
+    // Initialize _LightSampleContext_ for light sampling
+    LightSampleContext ctx(rsBuffer.isect->intr);
+    // Try to nudge the light sampling position to correct side of the surface
+    BxDFFlags flags = rsBuffer.bsdf->Flags();
+    if (IsReflective(flags) && !IsTransmissive(flags))
+        ctx.pi = rsBuffer.isect->intr.OffsetRayOrigin(rsBuffer.isect->intr.wo);
+    else if (IsTransmissive(flags) && !IsReflective(flags))
+        ctx.pi = rsBuffer.isect->intr.OffsetRayOrigin(-rsBuffer.isect->intr.wo);
+
+    DIReservoir localLight;
+    // Choose a light source for the direct lighting calculation
+    // TODO:: different sample light method
+    for(int i = 0;i < restirSetting.numLocalLightDISample; ++i)
+    {
+        Float u = sampler.Get1D();
+        pstd::optional<SampledLight> sampledLight = lightSampler.Sample(ctx, u);
+        Point2f uLight = sampler.Get2D();
+        if (!sampledLight || !sampledLight->p){    
+            localLight.M++;
+            continue;
+        }
+
+        // Sample a point on the light source for direct lighting
+        Light light = sampledLight->light;
+        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, rbBuffer.lambda, true);
+        if (!ls || !ls->L || ls->pdf == 0){    
+            localLight.M++;
+            continue;
+        }
+
+         // Evaluate BSDF for light sample and check light visibility
+        Vector3f wo = rsBuffer.isect->intr.wo, wi = ls->wi;
+        SampledSpectrum f = rsBuffer.bsdf->f(wo, wi) * AbsDot(wi, rsBuffer.isect->intr.shading.n);
+        if(!f){    
+            localLight.M++;
+            continue;
+        }
+
+        // RIS source PDF
+        Float source_p = sampledLight->p * ls->pdf;
+
+        // RIS target PDF
+        Float target_p = 0.0f;
+        
+        // RIS f(x)
+        SampledSpectrum w_ld = ClampZero(ls->L) * f;
+
+        target_p += w_ld.ToLuminance(rbBuffer.lambda);
+
+        if(streamReservoir(localLight, target_p, source_p, sampler))
+        {
+            localLight.targetPdf = target_p;
+            localLight.uv = uLight;
+            localLight.sampledLight = sampledLight;
+            localLight.ls = ls;
+        }
+    }
+
+    reservoir = localLight;
+
+    finalResampling(reservoir, rsBuffer, true, true);
+}
+
+// check light occluded and shading for WRS
+void ReSTIRIntegrator::Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir &reservoir){
+    if(!rbBuffer.ray)
+        return;
+
+    if (!rsBuffer.bsdf)
+        return;
+
+    if (!IsNonSpecular(rsBuffer.bsdf->Flags()))
+        return;
+
+    if (!reservoir.sampledLight)
+        return;
+
+    if (!reservoir.ls || !reservoir.ls->L || reservoir.ls->pdf == 0)
+        return;
+    
+    if(!restirSetting.reUseVisibility){
+        storeVisibility(reservoir, Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight), restirSetting.reUseVisibility);
+    }
+
+    if(!reservoir.visibility)
+        return;
+    
+    Vector3f wo = rsBuffer.isect->intr.wo, wi = reservoir.ls->wi;
+    SampledSpectrum f = rsBuffer.bsdf->f(wo, wi) * AbsDot(wi, rsBuffer.isect->intr.shading.n);
+    // Evaluate BSDF for light sample and check light visibility
+    if (!f)
+        return;
+        
+    // Return light's contribution to reflected radiance
+    rbBuffer.L += rbBuffer.beta * ClampZero(reservoir.ls->L) * f * reservoir.W;
+
+    // Float p_l = reservoir.targetPdf / (reservoir.weightSum / reservoir.M);
+
+    // Light light = reservoir.sampledLight->light;
+    // // return ls->L * f / p_l;
+    // if (IsDeltaLight(light.Type()) || disableBSDFLightSample)
+    //    rbBuffer.L += rbBuffer.beta * ClampZero(reservoir.ls->L) * f / p_l;
+    // else {
+    //    Float p_b = rsBuffer.bsdf->PDF(wo, wi);
+    //    Float w_l = PowerHeuristic(1, p_l, 1, p_b);
+    //    rbBuffer.L += rbBuffer.beta * w_l * ClampZero(reservoir.ls->L) * f / p_l;
+    // }
+}
+// *Add
+// ReSTIRIntegrator Method Definitions
+void ReSTIRIntegrator::Render() {
+
+    thread_local Point2i threadPixel;
+    thread_local int threadSampleIndex;
+    int stageIndex;
+    CheckCallbackScope _([&]() {
+        return StringPrintf("Rendering failed at pixel (%d, %d) sample %d stage %d. Debug with "
+                            "\"--debugstart %d,%d,%d\"\n",
+                            threadPixel.x, threadPixel.y, threadSampleIndex, stageIndex,
+                            threadPixel.x, threadPixel.y, threadSampleIndex);
+    });
+
+    Bounds2i pixelBounds = camera.GetFilm().PixelBounds();
+    int spp = samplerPrototype.SamplesPerPixel();
+    totalFrame = fps * (camera.GetShutterClose() - camera.GetShutterOpen());
+
+    // Declare common variables for rendering image in tiles
+    ThreadLocal<ScratchBuffer> scratchBuffers([]() { return ScratchBuffer(2048 * 2048); });
+    ThreadLocal<Sampler> samplers([this]() { return samplerPrototype.Clone(); });
+    // TODO::divide progress bar more properly
+    ProgressReporter progress(int64_t(spp * totalFrame), "Rendering",
+                              Options->quiet);
+
+    if (Options->recordPixelStatistics)
+        StatsEnablePixelStats(pixelBounds,
+                              RemoveExtension(camera.GetFilm().GetFilename()));
+
+
+    // // Handle MSE reference image, if provided
+    // pstd::optional<Image> referenceImage;
+    // FILE *mseOutFile = nullptr;
+    // if (!Options->mseReferenceImage.empty()) {
+    //     auto mse = Image::Read(Options->mseReferenceImage);
+    //     referenceImage = mse.image;
+    //
+    //     Bounds2i msePixelBounds =
+    //         mse.metadata.pixelBounds
+    //             ? *mse.metadata.pixelBounds
+    //             : Bounds2i(Point2i(0, 0), referenceImage->Resolution());
+    //     if (!Inside(pixelBounds, msePixelBounds))
+    //         ErrorExit("Output image pixel bounds %s aren't inside the MSE "
+    //                   "image's pixel bounds %s.",
+    //                   pixelBounds, msePixelBounds);
+    //
+    //     // Transform the pixelBounds of the image we're rendering to the
+    //     // coordinate system with msePixelBounds.pMin at the origin, which
+    //     // in turn gives us the section of the MSE image to crop. (This is
+    //     // complicated by the fact that Image doesn't support pixel
+    //     // bounds...)
+    //     Bounds2i cropBounds(Point2i(pixelBounds.pMin - msePixelBounds.pMin),
+    //                         Point2i(pixelBounds.pMax - msePixelBounds.pMin));
+    //     *referenceImage = referenceImage->Crop(cropBounds);
+    //     CHECK_EQ(referenceImage->Resolution(), Point2i(pixelBounds.Diagonal()));
+    //
+    //     mseOutFile = FOpenWrite(Options->mseReferenceOutput);
+    //     if (!mseOutFile)
+    //         ErrorExit("%s: %s", Options->mseReferenceOutput, ErrorString());
+    // }
+
+    // TODO:: animated display
+    // Connect to display server if needed
+    if (!Options->displayServer.empty()) {
+        Film film = camera.GetFilm();
+        DisplayDynamic(film.GetFilename(), Point2i(pixelBounds.Diagonal()),
+                       {"R", "G", "B"},
+                       [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
+                           int index = 0;
+                           for (Point2i p : b) {
+                               RGB rgb = film.GetPixelRGB(pixelBounds.pMin + p,
+                                                          2.f);
+                               for (int c = 0; c < 3; ++c)
+                                   displayValue[c][index] = rgb[c];
+                               ++index;
+                           }
+                       });
+    }
+
+    int currentSampleIndex = 0;
+
+    // reset rayStageBuffer
+    firstDIRayStageBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
+    prevFirstDIRayStageBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
+
+    // reset reservoir
+    firstDIReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+    prevFirstDIReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+
+    // Render image in waves
+    while (currentTime < 1.0f) {
+        // Render current wave's image tiles in parallel
+        // TODO:: maybe use ParallelFor1D to properly skip pixel that finished soon.
+        threadSampleIndex = currentSampleIndex;
+
+        // ping-pong
+        Array2D<RayStageBuffer>* rsBuffers = currentSampleIndex % 2 ? &firstDIRayStageBuffers : &prevFirstDIRayStageBuffers;
+        Array2D<DIReservoir>* reservoirBuffers = currentSampleIndex % 2 ? &firstDIReservoirBuffers : &prevFirstDIReservoirBuffers;
+        // reset buffer
+        rayBounceBuffers = Array2D<RayBounceBuffer>(camera.GetFilm().PixelBounds());
+
+        stageIndex = 0;
+        allFinished = true;
+        isFirstRay = true;
+  
+        ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+            Sampler &sampler = samplers.Get();
+
+            for (Point2i pPixel : tileBounds) {
+                StatsReportPixelStart(pPixel);
+                threadPixel = pPixel;
+
+                RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                // Render samples in pixel _pPixel_
+                sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                SpawnFirstRays(pPixel, rbBuffer, sampler, currentTime);
+                
+                rbBuffer.dim = sampler.GetDim();
+                
+                StatsReportPixelEnd(pPixel);
+            }
+        });
+        
+        while(!allFinished){
+            // reset buffer
+            *rsBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
+            *reservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+
+            stageIndex = 1;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+            for (Point2i pPixel : tileBounds) {
+                StatsReportPixelStart(pPixel);
+                threadPixel = pPixel;
+
+                RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+
+                IntersectSurfaces(rbBuffer, rsBuffer);
+                
+                StatsReportPixelEnd(pPixel);
+                }
+            });
+            
+            stageIndex = 2;
+            allFinished = true;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+
+                    HitEmittedLight(rbBuffer, rsBuffer);
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+            if(allFinished)
+                break;
+
+            stageIndex = 3;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                // Render image tile given by _tileBounds_
+                ScratchBuffer &scratchBuffer = scratchBuffers.Get();
+                Sampler &sampler = samplers.Get();
+
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+                    
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+
+                    // Render samples in pixel _pPixel_
+                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                    GetBSDF(rbBuffer, rsBuffer, scratchBuffer, sampler);
+
+                    rbBuffer.dim = sampler.GetDim();
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+
+            });
+
+            stageIndex = 4;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                Sampler &sampler = samplers.Get();
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+                    DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
+
+                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                    SampleLights(rbBuffer, rsBuffer, reservoir, sampler);
+
+                    rbBuffer.dim = sampler.GetDim();
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+
+            if(isFirstRay)
+            {
+                if(restirSetting.isSpatiotemporal)
+                {
+                    stageIndex = 5;
+                    ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                        Sampler &sampler = samplers.Get();
+                        for (Point2i pPixel : tileBounds) {
+                            StatsReportPixelStart(pPixel);
+                            threadPixel = pPixel;
+
+                            Array2D<DIReservoir>* prevReservoirs = currentSampleIndex % 2 ? &prevFirstDIReservoirBuffers : &firstDIReservoirBuffers;
+                            Array2D<RayStageBuffer>* prevRsBuffers = currentSampleIndex % 2 ? &prevFirstDIRayStageBuffers : &firstDIRayStageBuffers;
+                            RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                            RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+                            DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
+
+                            sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                            SpatialtemporalResample(pPixel, *prevReservoirs, *prevRsBuffers, reservoir, rsBuffer, rbBuffer, sampler);
+
+                            rbBuffer.dim = sampler.GetDim();
+                            
+                            StatsReportPixelEnd(pPixel);
+                        }
+                    });
+                }
+                else{
+                    if(restirSetting.isTemporal) //Temporal resampling combine
+                    {
+                        stageIndex = 5;
+                        ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                            Sampler &sampler = samplers.Get();
+                            for (Point2i pPixel : tileBounds) {
+                                StatsReportPixelStart(pPixel);
+                                threadPixel = pPixel;
+
+                                Array2D<DIReservoir>* prevReservoirs = currentSampleIndex % 2 ? &prevFirstDIReservoirBuffers : &firstDIReservoirBuffers;
+                                Array2D<RayStageBuffer>* prevRsBuffers = currentSampleIndex % 2 ? &prevFirstDIRayStageBuffers : &firstDIRayStageBuffers;
+                                RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                                RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+                                DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
+
+                                sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                                TemporalResample(pPixel, *prevReservoirs, *prevRsBuffers, reservoir, rsBuffer, rbBuffer, sampler);
+
+                                rbBuffer.dim = sampler.GetDim();
+                                
+                                StatsReportPixelEnd(pPixel);
+                            }
+                        });
+                    }
+                    
+                    if(restirSetting.isSpatial) //Spatial resampling combine
+                    {
+                        stageIndex = 6;
+                        Array2D<DIReservoir> spatialReservoir = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+                        ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                            Sampler &sampler = samplers.Get();
+                            for (Point2i pPixel : tileBounds) {
+                                StatsReportPixelStart(pPixel);
+                                threadPixel = pPixel;
+
+                                RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                                DIReservoir& reservoir = spatialReservoir[pPixel];
+
+                                sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                                SpatialResample(pPixel, *reservoirBuffers, *rsBuffers, rayBounceBuffers, reservoir, sampler);
+
+                                rbBuffer.dim = sampler.GetDim();
+                                
+                                StatsReportPixelEnd(pPixel);
+                            }
+                        });
+                        // TODO?:: try pass with pointer not copy?
+                        *reservoirBuffers = Array2D<DIReservoir>(spatialReservoir);
+                    }
+                }
+
+                
+            }
+            stageIndex = 7;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+                    DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
+
+                    Shading(rbBuffer, rsBuffer, reservoir);
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+
+            stageIndex = 8;
+            allFinished = true;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                Sampler &sampler = samplers.Get();
+                ScratchBuffer &scratchBuffer = scratchBuffers.Get();
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+
+                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+
+                    SpawnBrdfRays(rbBuffer, rsBuffer, sampler);
+
+                    rbBuffer.dim = sampler.GetDim();
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+            if(allFinished)
+                break;
+
+            reservoirBuffers = &DIReservoirBuffers;
+            rsBuffers = &rayStageBuffers;
+            isFirstRay = false;
+
+        }
+
+        scratchBuffers.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
+
+        stageIndex = 9;
+        ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+            for (Point2i pPixel : tileBounds) {
+                StatsReportPixelStart(pPixel);
+                threadPixel = pPixel;
+
+                RayBounceBuffer &buffer = rayBounceBuffers[pPixel];
+                SampledSpectrum L = buffer.weight * buffer.L;
+
+                // Issue warning if unexpected radiance value is returned
+                if (L.HasNaNs()) {
+                    LOG_ERROR("Not-a-number radiance value returned for pixel (%d, "
+                            "%d), sample %d. Setting to black.",
+                            pPixel.x, pPixel.y, currentSampleIndex);
+                    L = SampledSpectrum(0.f);
+                } else if (IsInf(L.y(buffer.lambda))) {
+                    LOG_ERROR("Infinite radiance value returned for pixel (%d, %d), "
+                            "sample %d. Setting to black.",
+                            pPixel.x, pPixel.y, currentSampleIndex);
+                    L = SampledSpectrum(0.f);
+                }
+
+                VisibleSurface visibleSurface;
+                camera.GetFilm().AddSample(pPixel, L, buffer.lambda, &visibleSurface,
+                                buffer.filterWeight);
+                
+                StatsReportPixelEnd(pPixel);
+            }
+        });
+        
+        
+        // Update start and end wave
+        progress.Update(1);
+        currentSampleIndex++;
+        
+        // Optionally write current image to disk
+        if (currentSampleIndex == spp || Options->writePartialImages /* || referenceImage*/) {
+            LOG_VERBOSE("Writing image with spp = %d", currentSampleIndex);
+            ImageMetadata metadata;
+            metadata.renderTimeSeconds = progress.ElapsedSeconds();
+            metadata.samplesPerPixel = currentSampleIndex;
+            // if (referenceImage) {
+            //     ImageMetadata filmMetadata;
+            //     Image filmImage =
+            //         camera.GetFilm().GetImage(&filmMetadata, 1.f / currentSampleIndex);
+            //     ImageChannelValues mse =
+            //         filmImage.MSE(filmImage.AllChannelsDesc(), *referenceImage);
+            //     fprintf(mseOutFile, "%d, %.9g\n", currentSampleIndex, mse.Average());
+            //     metadata.MSE = mse.Average();
+            //     fflush(mseOutFile);
+            // }
+            if (currentSampleIndex == spp || Options->writePartialImages) {
+                camera.InitMetadata(&metadata);
+                camera.GetFilm().WriteImage(metadata, 1.0f / currentSampleIndex);
+            }
+        }
+
+        if (currentSampleIndex == spp){
+            
+            currentTime += 1.0f / totalFrame;
+            currentSampleIndex = 0;
+
+            if(currentTime == 1.0f)
+                progress.Done();
+        }
+    }
+
+
+
+    // if (mseOutFile)
+    //     fclose(mseOutFile);
+    DisconnectFromDisplayServer();
+    LOG_VERBOSE("Rendering finished");
+}
+
+///////////////////////////////////////ReSTIR Integrator///////////////////////////////////////////////
 
 // SimplePathIntegrator Method Definitions
 SimplePathIntegrator::SimplePathIntegrator(int maxDepth, bool sampleLights,
@@ -641,7 +2365,7 @@ SampledSpectrum PathIntegrator::Li(RayDifferential ray, SampledWavelengths &lamb
         // Trace ray and find closest path vertex and its BSDF
         pstd::optional<ShapeIntersection> si = Intersect(ray);
         // Add emitted light at intersection point or from the environment
-        if (!si) {
+        if (!si) { /*hit background*/
             // Incorporate emission from infinite lights for escaped ray
             for (const auto &light : infiniteLights) {
                 SampledSpectrum Le = light.Le(ray, lambda);
@@ -660,8 +2384,9 @@ SampledSpectrum PathIntegrator::Li(RayDifferential ray, SampledWavelengths &lamb
             break;
         }
         // Incorporate emission from surface hit by ray
+        /*check hit light source*/
         SampledSpectrum Le = si->intr.Le(-ray.d, lambda);
-        if (Le) {
+        if (Le) { /*hit light source*/
             if (depth == 0 || specularBounce)
                 L += beta * Le;
             else {
@@ -721,15 +2446,24 @@ SampledSpectrum PathIntegrator::Li(RayDifferential ray, SampledWavelengths &lamb
             break;
 
         // Sample direct illumination from the light sources
+        /*Sample from light*/
         if (IsNonSpecular(bsdf.Flags())) {
             ++totalPaths;
             SampledSpectrum Ld = SampleLd(isect, &bsdf, lambda, sampler);
+            // TODO:: maybe add param to set sample mode?
+            // SampledSpectrum Ld = SampleAllLd(isect, &bsdf, lambda, sampler);
             if (!Ld)
                 ++zeroRadiancePaths;
             L += beta * Ld;
         }
 
+        // TODO::seperate brdf sample from light
+        // Don't sample light from brdf
+        if (depth == maxDepth)
+            break;
+
         // Sample BSDF to get new path direction
+        /*Sample from BRDF*/
         Vector3f wo = -ray.d;
         Float u = sampler.Get1D();
         pstd::optional<BSDFSample> bs = bsdf.Sample_f(wo, u, sampler.Get2D());
@@ -795,13 +2529,61 @@ SampledSpectrum PathIntegrator::SampleLd(const SurfaceInteraction &intr, const B
 
     // Return light's contribution to reflected radiance
     Float p_l = sampledLight->p * ls->pdf;
-    if (IsDeltaLight(light.Type()))
-        return ls->L * f / p_l;
+
+    // return ls->L * f / p_l;
+    if (IsDeltaLight(light.Type()) || true)
+       return ClampZero(ls->L) * f / p_l;
     else {
-        Float p_b = bsdf->PDF(wo, wi);
-        Float w_l = PowerHeuristic(1, p_l, 1, p_b);
-        return w_l * ls->L * f / p_l;
+       Float p_b = bsdf->PDF(wo, wi);
+       Float w_l = PowerHeuristic(1, p_l, 1, p_b);
+       return w_l * ClampZero(ls->L) * f / p_l;
     }
+}
+
+SampledSpectrum PathIntegrator::SampleAllLd(const SurfaceInteraction &intr, const BSDF *bsdf,
+                                         SampledWavelengths &lambda,
+                                         Sampler sampler) const {
+    // Initialize _LightSampleContext_ for light sampling
+    LightSampleContext ctx(intr);
+    // Try to nudge the light sampling position to correct side of the surface
+    BxDFFlags flags = bsdf->Flags();
+    if (IsReflective(flags) && !IsTransmissive(flags))
+        ctx.pi = intr.OffsetRayOrigin(intr.wo);
+    else if (IsTransmissive(flags) && !IsReflective(flags))
+        ctx.pi = intr.OffsetRayOrigin(-intr.wo);
+
+    SampledSpectrum Ld(0.f);
+    for (size_t i = 0; i < lights.size(); i++)
+    {
+        // Sample a point on the light source for direct lighting
+        Light light = lights[i];
+        Point2f uLight = sampler.Get2D();
+        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, lambda, true);
+        if (!ls || !ls->L || ls->pdf == 0)
+            continue;
+
+        // Evaluate BSDF for light sample and check light visibility
+        Vector3f wo = intr.wo, wi = ls->wi;
+        SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, intr.shading.n);
+        if (!f || Dot(wi, intr.shading.n) < 0.0f || !Unoccluded(intr, ls->pLight))
+            continue;
+
+        // Return light's contribution to reflected radiance
+        Float p_l = ls->pdf;
+
+        // return ls->L * f / p_l;
+        if (IsDeltaLight(light.Type()))
+            Ld += ClampZero(ls->L) * f / p_l;
+        else {
+            Float p_b = bsdf->PDF(wo, wi);
+            Float w_l = PowerHeuristic(1, p_l, 1, p_b);
+            Ld += w_l * ClampZero(ls->L) * f / p_l;
+        }
+    }
+    
+    Ld /= lights.size();
+    
+    return Ld;
 }
 
 std::string PathIntegrator::ToString() const {
@@ -818,6 +2600,319 @@ std::unique_ptr<PathIntegrator> PathIntegrator::Create(
     return std::make_unique<PathIntegrator>(maxDepth, camera, sampler, aggregate, lights,
                                             lightStrategy, regularize);
 }
+
+////////////////////////////////////////RIS Implement////////////////////////////////////////////////////
+
+// RIS PathIntegrator Method Definitions
+RisPathIntegrator::RisPathIntegrator(int maxDepth, int numRisSampleLd, Camera camera, Sampler sampler,
+                               Primitive aggregate, std::vector<Light> lights,
+                               const std::string &lightSampleStrategy, bool regularize)
+    : RayIntegrator(camera, sampler, aggregate, lights),
+      maxDepth(maxDepth),
+      numRisSampleLd(numRisSampleLd),
+      lightSampler(LightSampler::Create(lightSampleStrategy, lights, Allocator())),
+      regularize(regularize) {}
+
+SampledSpectrum RisPathIntegrator::Li(RayDifferential ray, SampledWavelengths &lambda,
+                                   Sampler sampler, ScratchBuffer &scratchBuffer,
+                                   VisibleSurface *visibleSurf) const {
+    // Declare local variables for RisPathIntegrator::Li()_
+    SampledSpectrum L(0.f), beta(1.f);
+    int depth = 0;
+
+    Float p_b, etaScale = 1;
+    bool specularBounce = false, anyNonSpecularBounces = false;
+    LightSampleContext prevIntrCtx;
+
+    // Sample path from camera and accumulate radiance estimate
+    while (true) {
+        // Trace ray and find closest path vertex and its BSDF
+        pstd::optional<ShapeIntersection> si = Intersect(ray);
+        // Add emitted light at intersection point or from the environment
+        if (!si) { /*hit background*/
+            // Incorporate emission from infinite lights for escaped ray
+            for (const auto &light : infiniteLights) {
+                SampledSpectrum Le = light.Le(ray, lambda);
+                if (depth == 0 || specularBounce)
+                    L += beta * Le;
+                else {
+                    // Compute MIS weight for infinite light
+                    Float p_l = lightSampler.PMF(prevIntrCtx, light) *
+                                light.PDF_Li(prevIntrCtx, ray.d, true);
+                    Float w_b = PowerHeuristic(1, p_b, 1, p_l);
+
+                    L += beta * w_b * Le;
+                }
+            }
+
+            break;
+        }
+        // Incorporate emission from surface hit by ray
+        /*check hit light source*/
+        SampledSpectrum Le = si->intr.Le(-ray.d, lambda);
+        if (Le) { /*hit light source*/
+            if (depth == 0 || specularBounce)
+                L += beta * Le;
+            else {
+                // Compute MIS weight for area light
+                Light areaLight(si->intr.areaLight);
+                Float p_l = lightSampler.PMF(prevIntrCtx, areaLight) *
+                            areaLight.PDF_Li(prevIntrCtx, ray.d, true);
+                Float w_l = PowerHeuristic(1, p_b, 1, p_l);
+
+                L += beta * w_l * Le;
+            }
+        }
+
+        SurfaceInteraction &isect = si->intr;
+        // Get BSDF and skip over medium boundaries
+        BSDF bsdf = isect.GetBSDF(ray, lambda, camera, scratchBuffer, sampler);
+        if (!bsdf) {
+            specularBounce = true;  // disable MIS if the indirect ray hits a light
+            isect.SkipIntersection(&ray, si->tHit);
+            continue;
+        }
+
+        // Initialize _visibleSurf_ at first intersection
+        if (depth == 0 && visibleSurf) {
+            // Estimate BSDF's albedo
+            // Define sample arrays _ucRho_ and _uRho_ for reflectance estimate
+            constexpr int nRhoSamples = 16;
+            const Float ucRho[nRhoSamples] = {
+                0.75741637, 0.37870818, 0.7083487, 0.18935409, 0.9149363, 0.35417435,
+                0.5990858,  0.09467703, 0.8578725, 0.45746812, 0.686759,  0.17708716,
+                0.9674518,  0.2995429,  0.5083201, 0.047338516};
+            const Point2f uRho[nRhoSamples] = {
+                Point2f(0.855985, 0.570367), Point2f(0.381823, 0.851844),
+                Point2f(0.285328, 0.764262), Point2f(0.733380, 0.114073),
+                Point2f(0.542663, 0.344465), Point2f(0.127274, 0.414848),
+                Point2f(0.964700, 0.947162), Point2f(0.594089, 0.643463),
+                Point2f(0.095109, 0.170369), Point2f(0.825444, 0.263359),
+                Point2f(0.429467, 0.454469), Point2f(0.244460, 0.816459),
+                Point2f(0.756135, 0.731258), Point2f(0.516165, 0.152852),
+                Point2f(0.180888, 0.214174), Point2f(0.898579, 0.503897)};
+
+            SampledSpectrum albedo = bsdf.rho(isect.wo, ucRho, uRho);
+
+            *visibleSurf = VisibleSurface(isect, albedo, lambda);
+        }
+
+        // Possibly regularize the BSDF
+        if (regularize && anyNonSpecularBounces) {
+            ++regularizedBSDFs;
+            bsdf.Regularize();
+        }
+
+        ++totalBSDFs;
+
+        // End path if maximum depth reached
+        if (depth++ == maxDepth)
+            break;
+
+        // Sample direct illumination from the light sources
+        /*Sample from light*/
+        if (IsNonSpecular(bsdf.Flags())) {
+            ++totalPaths;
+            SampledSpectrum Ld = SampleLd(isect, &bsdf, lambda, sampler);
+            if (!Ld)
+                ++zeroRadiancePaths;
+            L += beta * Ld;
+        }
+
+        // TODO::seperate brdf sample from light
+        // Don't sample light from brdf
+        if (depth == maxDepth)
+            break;
+
+        // Sample BSDF to get new path direction
+        /*Sample from BRDF*/
+        Vector3f wo = -ray.d;
+        Float u = sampler.Get1D();
+        pstd::optional<BSDFSample> bs = bsdf.Sample_f(wo, u, sampler.Get2D());
+        if (!bs)
+            break;
+        // Update path state variables after surface scattering
+        beta *= bs->f * AbsDot(bs->wi, isect.shading.n) / bs->pdf;
+        p_b = bs->pdfIsProportional ? bsdf.PDF(wo, bs->wi) : bs->pdf;
+        DCHECK(!IsInf(beta.y(lambda)));
+        specularBounce = bs->IsSpecular();
+        anyNonSpecularBounces |= !bs->IsSpecular();
+        if (bs->IsTransmission())
+            etaScale *= Sqr(bs->eta);
+        prevIntrCtx = si->intr;
+
+        ray = isect.SpawnRay(ray, bsdf, bs->wi, bs->flags, bs->eta);
+
+        // Possibly terminate the path with Russian roulette
+        SampledSpectrum rrBeta = beta * etaScale;
+        if (rrBeta.MaxComponentValue() < 1 && depth > 1) {
+            Float q = std::max<Float>(0, 1 - rrBeta.MaxComponentValue());
+            if (sampler.Get1D() < q)
+                break;
+            beta /= 1 - q;
+            DCHECK(!IsInf(beta.y(lambda)));
+        }
+    }
+    pathLength << depth;
+    return L;
+}
+
+SampledSpectrum RisPathIntegrator::SampleLd(const SurfaceInteraction &intr, const BSDF *bsdf,
+                                         SampledWavelengths &lambda,
+                                         Sampler sampler) const {
+    // Initialize _LightSampleContext_ for light sampling
+    LightSampleContext ctx(intr);
+    // Try to nudge the light sampling position to correct side of the surface
+    BxDFFlags flags = bsdf->Flags();
+    if (IsReflective(flags) && !IsTransmissive(flags))
+        ctx.pi = intr.OffsetRayOrigin(intr.wo);
+    else if (IsTransmissive(flags) && !IsReflective(flags))
+        ctx.pi = intr.OffsetRayOrigin(-intr.wo);
+
+    SampledSpectrum Ld;
+    pstd::optional<LightLiSample> Ls;
+
+    /////////////////////// RIS DI Resample ////////////////////////
+    int M = 0;
+    Float w_sum = 0.0f;
+    std::vector<SampledSpectrum> ld_candidate;
+    std::vector<pstd::optional<LightLiSample>> ls_candidate;
+    std::vector<Float> target_pdf_candidate;
+    std::vector<Float> w_cdf;
+    std::vector<Float> p_b_candidate;
+    ld_candidate.resize(numRisSampleLd);
+    ls_candidate.resize(numRisSampleLd);
+    target_pdf_candidate.resize(numRisSampleLd);
+    w_cdf.resize(numRisSampleLd);
+    p_b_candidate.resize(numRisSampleLd);
+
+    for(int i = 0;i < numRisSampleLd; ++i)
+    {   
+        // Choose a light source for the direct lighting calculation
+        Float u = sampler.Get1D();
+        pstd::optional<SampledLight> sampledLight = lightSampler.Sample(ctx, u);
+        Point2f uLight = sampler.Get2D();
+        if (!sampledLight)
+            continue;
+
+        // Sample a point on the light source for direct lighting
+        Light light = sampledLight->light;
+        DCHECK(light && sampledLight->p > 0);
+        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, lambda, true);
+        if (!ls || !ls->L || ls->pdf == 0)
+            continue;
+        
+        // Evaluate BSDF for light sample and check light visibility
+        Vector3f wo = intr.wo, wi = ls->wi;
+        SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, intr.shading.n);
+
+        if(!f)
+            continue;
+        // RIS weight
+        Float w;
+
+        SampledSpectrum w_ld;
+
+        // light's contribution to reflected radiance
+
+        // RIS source PDF
+        Float source_p = sampledLight->p * ls->pdf;
+
+        // RIS target PDF
+        Float target_p = 0.0f;
+        
+        // RIS f(x)
+        w_ld = ClampZero(ls->L) * f;
+
+        // to calcute MIS weight?
+        Float p_b = 0.0f;
+
+        if (IsDeltaLight(light.Type()))
+            p_b = 0.0f;
+        else
+            p_b = bsdf->PDF(wo, wi);
+
+        target_p += w_ld.ToLuminance(lambda);
+
+        w = target_p / source_p;
+
+        if(w == 0)
+            continue;
+
+        p_b_candidate[M] = p_b;
+        target_pdf_candidate[M] = target_p;
+        w_sum += w;
+        ls_candidate[M] = ls;
+        ld_candidate[M] = w_ld;
+        w_cdf[M] = w_sum;
+        M++;
+    }
+
+    if(w_sum == 0 || M == 0)
+        return {};
+
+    Float redraw_rng = sampler.Get1D();
+    Float target_pdf;
+    Float p_b;
+
+    for(int i = 0;i < M;++i)
+    {   
+        if(redraw_rng <= w_cdf[i] / w_sum)
+        {
+            Ld = ld_candidate[i];
+            Ls = ls_candidate[i];
+            target_pdf = target_pdf_candidate[i];
+            p_b = p_b_candidate[i];
+            
+            break;
+        }
+    }
+    /////////////////////////////////////////////////////////////////
+
+    if (!Unoccluded(intr, Ls->pLight))
+        return {};
+
+    /*             RIS normalize target pdf             */
+    /*  target pdf / (RIS Monte carlo target pdf integ) */
+    Float p_l =  target_pdf / (w_sum/numRisSampleLd);
+    // Return light's contribution to reflected radiance
+    // RIS Shading for opaque case f == tar PDF (Ld / Ld = 1)
+    SampledSpectrum outLd = Ld / p_l;
+
+    // Clamp for Firefly Clamp Rejection
+    Float MaxRadiance = 10;
+    Float luminance = outLd.ToLuminance(lambda);
+    if (luminance > MaxRadiance)
+            outLd *= MaxRadiance / luminance;
+
+    // if (p_b == 0.0f)
+       return outLd;
+    // else {
+    //    Float w_l = PowerHeuristic(1, p_l, 1, p_b);
+    //    return w_l * outLd;
+    // }
+}
+
+std::string RisPathIntegrator::ToString() const {
+    return StringPrintf("[ RestirPathIntegrator maxDepth: %d lightSampler: %s regularize: %s ]",
+                        maxDepth, lightSampler, regularize);
+}
+
+std::unique_ptr<RisPathIntegrator> RisPathIntegrator::Create(
+    const ParameterDictionary &parameters, Camera camera, Sampler sampler,
+    Primitive aggregate, std::vector<Light> lights, const FileLoc *loc) {
+    int maxDepth = parameters.GetOneInt("maxdepth", 5);
+    int numRisSampleLd = parameters.GetOneInt("numrisld", 8);
+    std::string lightStrategy = parameters.GetOneString("lightsampler", "uniform");
+    bool regularize = parameters.GetOneBool("regularize", false);
+
+    printf("Using test RisPathIntegrator.\n");
+
+    return std::make_unique<RisPathIntegrator>(maxDepth, numRisSampleLd, camera, sampler, aggregate, lights,
+                                            lightStrategy, regularize);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // SimpleVolPathIntegrator Method Definitions
 SimpleVolPathIntegrator::SimpleVolPathIntegrator(int maxDepth, Camera camera,
@@ -3651,6 +5746,15 @@ std::unique_ptr<Integrator> Integrator::Create(
     if (name == "path")
         integrator =
             PathIntegrator::Create(parameters, camera, sampler, aggregate, lights, loc);
+    else if (name == "rispath")
+        integrator =
+            RisPathIntegrator::Create(parameters, camera, sampler, aggregate, lights, loc);
+    else if (name == "myWavefront")
+        integrator =
+            WavefrontPathIntegrator::Create(parameters, camera, sampler, aggregate, lights, loc);
+    else if (name == "restir")
+        integrator =
+            ReSTIRIntegrator::Create(parameters, camera, sampler, aggregate, lights, loc);
     else if (name == "function")
         integrator = FunctionIntegrator::Create(parameters, camera, sampler, loc);
     else if (name == "simplepath")

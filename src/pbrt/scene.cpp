@@ -270,6 +270,7 @@ void BasicSceneBuilder::Shape(const std::string &name, ParsedParameterVector par
         areaLightIndex = scene->AddAreaLight(SceneEntity(graphicsState.areaLightName,
                                                          graphicsState.areaLightParams,
                                                          graphicsState.areaLightLoc));
+        // TODO:: Create Area Light's instance dict name.
         if (activeInstanceDefinition)
             Warning(&loc, "Area lights not supported with object instancing");
     }
@@ -293,7 +294,8 @@ void BasicSceneBuilder::Shape(const std::string &name, ParsedParameterVector par
             transformCache.Lookup(RenderFromObject(0));
         const class Transform *objectFromRender =
             transformCache.Lookup(Inverse(*renderFromObject));
-
+        // TODO?::
+        // worldFromObject for instance
         ShapeSceneEntity entity(
             {name, std::move(dict), loc, renderFromObject, objectFromRender,
              graphicsState.reverseOrientation, graphicsState.currentMaterialIndex,
@@ -388,9 +390,10 @@ void BasicSceneBuilder::ObjectInstance(const std::string &origName, FileLoc loc)
             return;
         }
     }
-
+    
     const class Transform *renderFromInstance =
         transformCache.Lookup(RenderFromObject(0) * worldFromRender);
+    // TODO:: Dump instance area light's transform to dict
     instanceUses.push_back(InstanceSceneEntity(name, loc, renderFromInstance));
 }
 
@@ -909,6 +912,34 @@ void BasicScene::startLoadingNormalMaps(const ParameterDictionary &parameters) {
     normalMapJobs[filename] = RunAsync(create, filename);
 }
 
+// *Add
+// syn load emissivemap
+void BasicScene::startLoadingEmissiveMaps(const ParameterDictionary &parameters) {
+    std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
+    if (filename.empty())
+        return;
+
+    // Overload materialMutex, which we already hold, for the futures...
+    if (emissiveMapJobs.find(filename) != emissiveMapJobs.end())
+        // It's already in flight.
+        return;
+
+    auto create = [=](std::string filename) {
+        Allocator alloc = threadAllocators.Get();
+        ImageAndMetadata immeta =
+            Image::Read(filename, Allocator(), ColorEncoding::Linear);
+        Image &image = immeta.image;
+        ImageChannelDesc rgbDesc = image.GetChannelDesc({"R", "G", "B"});
+        if (!rgbDesc)
+            ErrorExit("%s: emissive map image must contain R, G, and B channels", filename);
+        Image *emissiveMap = alloc.new_object<Image>(alloc);
+        *emissiveMap = image.SelectChannels(rgbDesc);
+
+        return emissiveMap;
+    };
+    emissiveMapJobs[filename] = RunAsync(create, filename);
+}
+
 void BasicScene::AddFloatTexture(std::string name, TextureSceneEntity texture) {
     if (texture.renderFromObject.IsAnimated())
         Warning(&texture.loc, "Animated world to texture transforms are not supported. "
@@ -1019,6 +1050,9 @@ void BasicScene::AddLight(LightSceneEntity light) {
 
 int BasicScene::AddAreaLight(SceneEntity light) {
     std::lock_guard<std::mutex> lock(areaLightMutex);
+    // *Add
+    // syn load emissivemap
+    startLoadingEmissiveMaps(light.parameters);
     areaLights.push_back(std::move(light));
     return areaLights.size() - 1;
 }
@@ -1264,6 +1298,17 @@ std::vector<Light> BasicScene::CreateLights(
         return iter->second;
     };
 
+    // *Add
+    // load emisivemap
+    LOG_VERBOSE("Starting to consume %d emissive map futures", emissiveMapJobs.size());
+    std::lock_guard<std::mutex> al_lock(areaLightMutex);
+    for (auto &job : emissiveMapJobs) {
+        CHECK(emissiveMaps.find(job.first) == emissiveMaps.end());
+        emissiveMaps[job.first] = job.second->GetResult();
+    }
+    emissiveMapJobs.clear();
+    LOG_VERBOSE("Finished consuming emissive map futures");
+
     Allocator alloc = threadAllocators.Get();
 
     auto getAlphaTexture = [&](const ParameterDictionary &parameters,
@@ -1325,19 +1370,34 @@ std::vector<Light> BasicScene::CreateLights(
 
         pstd::vector<Light> *shapeLights = new pstd::vector<Light>(alloc);
         const auto &areaLightEntity = areaLights[sh.lightIndex];
+
+        //*Add
+        //fix emissive map
+        std::string fn =
+            ResolveFilename(areaLightEntity.parameters.GetOneString("filename", ""));
+        Image *emissiveMap = nullptr;
+        if (!fn.empty()) {
+            CHECK(emissiveMaps.find(fn) != emissiveMaps.end());
+            emissiveMap = emissiveMaps[fn];
+        }
+
         for (pbrt::Shape ps : shapeObjects) {
             Light area = Light::CreateArea(
                 areaLightEntity.name, areaLightEntity.parameters, *sh.renderFromObject,
-                mi, ps, alphaTex, &areaLightEntity.loc, alloc);
+                mi, ps, emissiveMap, alphaTex, &areaLightEntity.loc, alloc);
+            //TODO:: Dump AreaLight dict instance transform and do instance
             if (area) {
+                //all light
                 lights.push_back(area);
+                // all light of this shapeObjects
                 shapeLights->push_back(area);
             }
         }
-
+        
+        // shapeObjects id to area light
         (*shapeIndexToAreaLights)[i] = shapeLights;
     }
-
+    
     LOG_VERBOSE("Finished area lights");
 
     LOG_VERBOSE("Starting to consume non-area light futures");
@@ -1349,6 +1409,106 @@ std::vector<Light> BasicScene::CreateLights(
     return lights;
 }
 
+// *Add
+// create instance light
+std::vector<Light> BasicScene::CreateInstanceShapeLights(
+    const NamedTextures &textures, const ShapeSceneEntity sh, const Transform renderFromInstance){
+    auto findMedium = [this](const std::string &s, const FileLoc *loc) -> Medium {
+        if (s.empty())
+            return nullptr;
+
+        auto iter = mediaMap.find(s);
+        if (iter == mediaMap.end())
+            ErrorExit(loc, "%s: medium not defined", s);
+        return iter->second;
+    };
+
+    Allocator alloc = threadAllocators.Get();
+
+    auto getAlphaTexture = [&](const ParameterDictionary &parameters,
+                               const FileLoc *loc) -> FloatTexture {
+        std::string alphaTexName = parameters.GetTexture("alpha");
+        if (!alphaTexName.empty()) {
+            if (auto iter = textures.floatTextures.find(alphaTexName);
+                iter != textures.floatTextures.end()) {
+                if (Options->useGPU &&
+                    !BasicTextureEvaluator().CanEvaluate({iter->second}, {}))
+                    // A warning will be issued elsewhere...
+                    return nullptr;
+                return iter->second;
+            } else
+                ErrorExit(loc, "%s: couldn't find float texture for \"alpha\" parameter.",
+                          alphaTexName);
+        } else if (Float alpha = parameters.GetOneFloat("alpha", 1.f); alpha < 1.f)
+            return alloc.new_object<FloatConstantTexture>(alpha);
+        else
+            return nullptr;
+    };
+
+    std::vector<Light> shapeLights;
+    
+    std::string materialName;
+    if (!sh.materialName.empty()) {
+        auto iter =
+            std::find_if(namedMaterials.begin(), namedMaterials.end(),
+                        [&](auto iter) { return iter.first == sh.materialName; });
+        if (iter == namedMaterials.end())
+            ErrorExit(&sh.loc, "%s: no named material defined.", sh.materialName);
+        CHECK(iter->second.parameters.GetStringArray("type").size() > 0);
+        materialName = iter->second.parameters.GetOneString("type", "");
+    } else {
+        CHECK_LT(sh.materialIndex, materials.size());
+        materialName = materials[sh.materialIndex].name;
+    }
+    if (materialName == "interface" || materialName == "none" || materialName == "") {
+        Warning(&sh.loc, "Ignoring area light specification for shape "
+                        "with \"interface\" material.");
+        return shapeLights;
+    }
+
+    const auto &areaLightEntity = areaLights[sh.lightIndex];
+
+    pbrt::Transform renderFromObject(sh.renderFromObject->GetMatrix());
+    renderFromObject = pbrt::Transform((renderFromInstance * renderFromObject).GetMatrix());
+
+    pstd::vector<pbrt::Shape> shapeObjects = Shape::Create(
+        sh.name, &renderFromObject, sh.objectFromRender, sh.reverseOrientation,
+        sh.parameters, textures.floatTextures, &sh.loc, alloc);
+
+    FloatTexture alphaTex = getAlphaTexture(sh.parameters, &sh.loc);
+
+    pbrt::MediumInterface mi(findMedium(sh.insideMedium, &sh.loc),
+                            findMedium(sh.outsideMedium, &sh.loc));
+
+
+    //*Add
+    std::string fn =
+        ResolveFilename(areaLightEntity.parameters.GetOneString("filename", ""));
+    Image *emissiveMap = nullptr;
+    if (!fn.empty()) {
+        CHECK(emissiveMaps.find(fn) != emissiveMaps.end());
+        emissiveMap = emissiveMaps[fn];
+    }
+
+    for (pbrt::Shape ps : shapeObjects) {
+        Light area = Light::CreateArea(
+            areaLightEntity.name, areaLightEntity.parameters, *sh.renderFromObject,
+            mi, ps, emissiveMap, alphaTex, &areaLightEntity.loc, alloc);
+        //TODO:: Dump AreaLight dict instance transform and do instance
+        if (area) {
+            // all light of this shapeObjects
+            shapeLights.push_back(area);
+        }
+    }
+    // shapeObjects id to area light
+    return shapeLights;
+        
+
+    
+}
+
+// TODO?::
+// instanceNameToAreaLights for instance arealight
 Primitive BasicScene::CreateAggregate(
     const NamedTextures &textures,
     const std::map<int, pstd::vector<Light> *> &shapeIndexToAreaLights,
@@ -1426,6 +1586,7 @@ Primitive BasicScene::CreateAggregate(
                 Light area = nullptr;
                 // Will not be present in the map if it has an "interface"
                 // material...
+
                 if (sh.lightIndex != -1 && iter != shapeIndexToAreaLights.end())
                     area = (*iter->second)[j];
 
@@ -1440,6 +1601,66 @@ Primitive BasicScene::CreateAggregate(
         }
         return primitives;
     };
+
+    // TODO?::
+    // instance shapes
+    // auto CreatePrimitivesForInstanceShapes =
+    //     [&](std::vector<ShapeSceneEntity> &shapes, InternedString instanceName) -> std::vector<Primitive> {
+    //     // Parallelize Shape::Create calls, which will in turn
+    //     // parallelize PLY file loading, etc...
+    //     pstd::vector<pstd::vector<pbrt::Shape>> shapeVectors(shapes.size());
+    //     ParallelFor(0, shapes.size(), [&](int64_t i) {
+    //         const auto &sh = shapes[i];
+    //         shapeVectors[i] = Shape::Create(
+    //             sh.name, sh.renderFromObject, sh.objectFromRender, sh.reverseOrientation,
+    //             sh.parameters, textures.floatTextures, &sh.loc, alloc);
+    //     });
+
+    //     std::vector<Primitive> primitives;
+    //     for (size_t i = 0; i < shapes.size(); ++i) {
+    //         auto &sh = shapes[i];
+    //         pstd::vector<pbrt::Shape> &shapes = shapeVectors[i];
+    //         if (shapes.empty())
+    //             continue;
+
+    //         FloatTexture alphaTex = getAlphaTexture(sh.parameters, &sh.loc);
+    //         sh.parameters.ReportUnused();  // do now so can grab alpha...
+
+    //         pbrt::Material mtl = nullptr;
+    //         if (!sh.materialName.empty()) {
+    //             auto iter = namedMaterials.find(sh.materialName);
+    //             if (iter == namedMaterials.end())
+    //                 ErrorExit(&sh.loc, "%s: no named material defined.", sh.materialName);
+    //             mtl = iter->second;
+    //         } else {
+    //             CHECK_LT(sh.materialIndex, materials.size());
+    //             mtl = materials[sh.materialIndex];
+    //         }
+
+    //         pbrt::MediumInterface mi(findMedium(sh.insideMedium, &sh.loc),
+    //                                  findMedium(sh.outsideMedium, &sh.loc));
+
+    //         auto iter = instanceNameToAreaLights.find(instanceName);
+    //         for (size_t j = 0; j < shapes.size(); ++j) {
+    //             // Possibly create area light for shape
+    //             Light area = nullptr;
+    //             // Will not be present in the map if it has an "interface"
+    //             // material...
+
+    //             if (sh.lightIndex != -1 && iter != instanceNameToAreaLights.end())
+    //                 area = (*iter->second)[j];
+
+    //             if (!area && !mi.IsMediumTransition() && !alphaTex)
+    //                 primitives.push_back(new SimplePrimitive(shapes[j], mtl));
+    //             else
+    //                 primitives.push_back(
+    //                     new GeometricPrimitive(shapes[j], mtl, j, mi, alphaTex));
+    //         }
+    //         sh.parameters.FreeParameters();
+    //         sh = ShapeSceneEntity();
+    //     }
+    //     return primitives;
+    // };
 
     LOG_VERBOSE("Starting shapes");
     std::vector<Primitive> primitives = CreatePrimitivesForShapes(shapes);
@@ -1482,6 +1703,7 @@ Primitive BasicScene::CreateAggregate(
             std::vector<Primitive> prims;
             for (auto &s : shapes) {
                 if (sh.lightIndex != -1) {
+                    // TODO?:: animated area light?
                     CHECK(sh.renderFromObject.IsAnimated());
                     ErrorExit(&sh.loc, "Animated area lights are not supported.");
                 }
@@ -1530,6 +1752,8 @@ Primitive BasicScene::CreateAggregate(
     ParallelFor(0, instanceDefinitionIterators.size(), [&](int64_t i) {
         auto &inst = *instanceDefinitionIterators[i];
 
+        // TODO?::
+        // CreatePrimitivesForInstanceShapes(inst.second->shapes, inst.first);
         std::vector<Primitive> instancePrimitives =
             CreatePrimitivesForShapes(inst.second->shapes);
         std::vector<Primitive> movingInstancePrimitives =
@@ -1537,6 +1761,7 @@ Primitive BasicScene::CreateAggregate(
         instancePrimitives.insert(instancePrimitives.end(),
                                   movingInstancePrimitives.begin(),
                                   movingInstancePrimitives.end());
+        
 
         if (instancePrimitives.size() > 1) {
             Primitive bvh = new BVHAggregate(std::move(instancePrimitives));
@@ -1554,8 +1779,29 @@ Primitive BasicScene::CreateAggregate(
         inst.second = nullptr;
     });
 
+    //* TODO?::
+    // Create instance light
+    // for (const auto &inst : instances) {
+    //     auto iter = this->instanceDefinitions.find(inst.name);
+    //     if (iter == this->instanceDefinitions.end())
+    //         ErrorExit(&inst.loc, "%s: object instance not defined", inst.name);
+    //     if (!iter->second)
+    //         // empty instance
+    //         continue;
+
+    //     //*Add 
+    //     // create instance area light
+    //     if (inst.renderFromInstance)
+    //         for (size_t i = 0; i < iter->second->shapes.size(); ++i)
+    //         {
+    //             const auto &sh = iter->second->shapes[i];
+    //             std::vector<Light> shapelights = CreateInstanceShapeLights(textures, sh, inst.renderFromInstance);
+    //         }
+    // }
+
     this->instanceDefinitions.clear();
 
+    
     // Instances
     for (const auto &inst : instances) {
         auto iter = instanceDefinitions.find(inst.name);
@@ -1566,9 +1812,17 @@ Primitive BasicScene::CreateAggregate(
             // empty instance
             continue;
 
+        //TODO?:: Create isntance light(copy modify push)
+        // create and dulpicate area light
+        // auto areaLightIndex = instancesIndexToAreaLights.find(i);
+        // Light area = nullptr;
+
+        // if (sh.lightIndex != -1 && iter != shapeIndexToAreaLights.end())
+        //     area = (*iter->second)[j];
+
         if (inst.renderFromInstance)
             primitives.push_back(
-                new TransformedPrimitive(iter->second, inst.renderFromInstance));
+                new TransformedPrimitive(iter->second, inst.renderFromInstance/*, area */));
         else {
             primitives.push_back(
                 new AnimatedPrimitive(iter->second, *inst.renderFromInstanceAnim));

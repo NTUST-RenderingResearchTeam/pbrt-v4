@@ -1,0 +1,7 @@
+MSVC 14.39
+cd C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build
+vcvarall.bat x64 -vcvars_ver=14.39
+
+CUDA
+cmake -t cuda=12.4
+CMAKE_CUDA_ARCHITECTURES=75

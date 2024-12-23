@@ -269,6 +269,8 @@ class FormattingParserTarget : public ParserTarget {
     std::map<std::string, std::string> definedNamedMaterials;
     std::map<std::string, ParameterDictionary> namedMaterialDictionaries;
     std::map<std::string, std::string> definedObjectInstances;
+    //TODO:: dict for Instance Area Light
+    std::map<std::string, std::string> definedObjectAreaLightInstances;
 };
 
 }  // namespace pbrt

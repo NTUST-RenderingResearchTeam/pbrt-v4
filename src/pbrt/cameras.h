@@ -117,12 +117,14 @@ struct CameraWiSample {
 struct CameraRay {
     Ray ray;
     SampledSpectrum weight = SampledSpectrum(1);
+    Point3f pCamera;
 };
 
 // CameraRayDifferential Definition
 struct CameraRayDifferential {
     RayDifferential ray;
     SampledSpectrum weight = SampledSpectrum(1);
+    Point3f pCamera;
 };
 
 // CameraBaseParameters Definition
@@ -142,6 +144,11 @@ class CameraBase {
     // CameraBase Public Methods
     PBRT_CPU_GPU
     Film GetFilm() const { return film; }
+    // *Add
+    PBRT_CPU_GPU
+    Float GetShutterOpen() const { return shutterOpen; }
+    PBRT_CPU_GPU
+    Float GetShutterClose() const { return shutterClose; }
     PBRT_CPU_GPU
     const CameraTransform &GetCameraTransform() const { return cameraTransform; }
 
@@ -182,6 +189,9 @@ class CameraBase {
             sppScale * RenderFromCamera(DownZFromCamera.ApplyInverse(py - pDownZ), time);
     }
 
+    PBRT_CPU_GPU
+    virtual Point3f reProjected(Point3f renderCamera, Float reprojectTime) const{ return Point3f();};
+
   protected:
     // CameraBase Protected Members
     CameraTransform cameraTransform;
@@ -198,6 +208,11 @@ class CameraBase {
     PBRT_CPU_GPU
     static pstd::optional<CameraRayDifferential> GenerateRayDifferential(
         Camera camera, CameraSample sample, SampledWavelengths &lambda);
+
+    // *Add camera animated
+    PBRT_CPU_GPU
+    static pstd::optional<CameraRayDifferential> GenerateRayDifferentialAnimated(
+        Camera camera, CameraSample sample, SampledWavelengths &lambda, Float aTime);
 
     PBRT_CPU_GPU
     Ray RenderFromCamera(const Ray &r) const {
@@ -251,6 +266,13 @@ class ProjectiveCamera : public CameraBase {
 
     std::string BaseToString() const;
 
+    PBRT_CPU_GPU
+    Point3f reProjected(Point3f renderCamera, Float reprojectTime) const{
+        Point3f pCamera = CameraFromRender(renderCamera, reprojectTime);
+        Point3f pFilm = rasterFromCamera(pCamera);
+        return pFilm;
+    }
+
     ProjectiveCamera(CameraBaseParameters baseParameters,
                      const Transform &screenFromCamera, Bounds2f screenWindow,
                      Float lensRadius, Float focalDistance)
@@ -270,11 +292,13 @@ class ProjectiveCamera : public CameraBase {
         screenFromRaster = Inverse(rasterFromScreen);
 
         cameraFromRaster = Inverse(screenFromCamera) * screenFromRaster;
+        rasterFromCamera = Inverse(cameraFromRaster);
     }
 
   protected:
     // ProjectiveCamera Protected Members
-    Transform screenFromCamera, cameraFromRaster;
+    Transform screenFromCamera;
+    Transform rasterFromCamera, cameraFromRaster;
     Transform rasterFromScreen, screenFromRaster;
     Float lensRadius, focalDistance;
 };
@@ -302,8 +326,18 @@ class OrthographicCamera : public ProjectiveCamera {
                                           SampledWavelengths &lambda) const;
 
     PBRT_CPU_GPU
+    pstd::optional<CameraRay> GenerateRayAnimated(CameraSample sample,
+                                          SampledWavelengths &lambda, Float aTime) const;
+
+    // *Add camera animated
+    PBRT_CPU_GPU
     pstd::optional<CameraRayDifferential> GenerateRayDifferential(
         CameraSample sample, SampledWavelengths &lambda) const;
+
+    // *Add camera animated
+    PBRT_CPU_GPU
+    pstd::optional<CameraRayDifferential> GenerateRayDifferentialAnimated(
+        CameraSample sample, SampledWavelengths &lambda, Float aTime) const;
 
     static OrthographicCamera *Create(const ParameterDictionary &parameters,
                                       const CameraTransform &cameraTransform, Film film,
@@ -380,9 +414,19 @@ class PerspectiveCamera : public ProjectiveCamera {
     pstd::optional<CameraRay> GenerateRay(CameraSample sample,
                                           SampledWavelengths &lambda) const;
 
+    // *Add camera animated
+    PBRT_CPU_GPU
+    pstd::optional<CameraRay> GenerateRayAnimated(CameraSample sample,
+                                          SampledWavelengths &lambda, Float aTime) const;
+
     PBRT_CPU_GPU
     pstd::optional<CameraRayDifferential> GenerateRayDifferential(
         CameraSample sample, SampledWavelengths &lambda) const;
+
+    // *Add camera animated
+    PBRT_CPU_GPU
+    pstd::optional<CameraRayDifferential> GenerateRayDifferentialAnimated(
+        CameraSample sample, SampledWavelengths &lambda, Float aTime) const;
 
     PBRT_CPU_GPU
     SampledSpectrum We(const Ray &ray, SampledWavelengths &lambda,
@@ -424,10 +468,22 @@ class SphericalCamera : public CameraBase {
     pstd::optional<CameraRay> GenerateRay(CameraSample sample,
                                           SampledWavelengths &lambda) const;
 
+    // *Add camera animated
+    PBRT_CPU_GPU
+    pstd::optional<CameraRay> GenerateRayAnimated(CameraSample sample,
+                                          SampledWavelengths &lambda, Float aTime) const;
+
     PBRT_CPU_GPU
     pstd::optional<CameraRayDifferential> GenerateRayDifferential(
         CameraSample sample, SampledWavelengths &lambda) const {
         return CameraBase::GenerateRayDifferential(this, sample, lambda);
+    }
+
+    // *Add camera animated
+    PBRT_CPU_GPU
+    pstd::optional<CameraRayDifferential> GenerateRayDifferentialAnimated(
+        CameraSample sample, SampledWavelengths &lambda, Float aTime) const {
+        return CameraBase::GenerateRayDifferentialAnimated(this, sample, lambda, aTime);
     }
 
     PBRT_CPU_GPU
@@ -479,10 +535,22 @@ class RealisticCamera : public CameraBase {
     pstd::optional<CameraRay> GenerateRay(CameraSample sample,
                                           SampledWavelengths &lambda) const;
 
+    // *Add aniumated camera
+    PBRT_CPU_GPU
+    pstd::optional<CameraRay> GenerateRayAnimated(CameraSample sample,
+                                          SampledWavelengths &lambda, Float aTime) const;
+
     PBRT_CPU_GPU
     pstd::optional<CameraRayDifferential> GenerateRayDifferential(
         CameraSample sample, SampledWavelengths &lambda) const {
         return CameraBase::GenerateRayDifferential(this, sample, lambda);
+    }
+
+    // *Add aniumated camera
+    PBRT_CPU_GPU
+    pstd::optional<CameraRayDifferential> GenerateRayDifferentialAnimated(
+        CameraSample sample, SampledWavelengths &lambda, Float aTime) const {
+        return CameraBase::GenerateRayDifferentialAnimated(this, sample, lambda, aTime);
     }
 
     PBRT_CPU_GPU
@@ -590,8 +658,31 @@ inline pstd::optional<CameraRay> Camera::GenerateRay(CameraSample sample,
     return Dispatch(generate);
 }
 
+// *Add aniumated camera
+inline pstd::optional<CameraRay> Camera::GenerateRayAnimated(CameraSample sample,
+                                                     SampledWavelengths &lambda, Float aTime) const {
+    auto generate = [&](auto ptr) { return ptr->GenerateRayAnimated(sample, lambda, aTime); };
+    return Dispatch(generate);
+}
+
+inline Point3f Camera::reProjected(Point3f renderCamera, Float reprojectTime) const {
+    auto generate = [&](auto ptr) { return ptr->reProjected(renderCamera, reprojectTime); };
+    return Dispatch(generate);
+}
+
 inline Film Camera::GetFilm() const {
     auto getfilm = [&](auto ptr) { return ptr->GetFilm(); };
+    return Dispatch(getfilm);
+}
+
+// *Add
+inline Float Camera::GetShutterOpen() const {
+    auto getfilm = [&](auto ptr) { return ptr->GetShutterOpen(); };
+    return Dispatch(getfilm);
+}
+
+inline Float Camera::GetShutterClose() const {
+    auto getfilm = [&](auto ptr) { return ptr->GetShutterClose(); };
     return Dispatch(getfilm);
 }
 

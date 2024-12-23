@@ -38,6 +38,20 @@ GeometricPrimitive::GeometricPrimitive(Shape shape, Material material, Light are
     : shape(shape),
       material(material),
       areaLight(areaLight),
+      instanceAreaLightsIndex(-1),
+      mediumInterface(mediumInterface),
+      alpha(alpha) {
+    primitiveMemory += sizeof(*this);
+}
+
+//*Add
+// instance root GeometricPrimitive Method Definitions
+GeometricPrimitive::GeometricPrimitive(Shape shape, Material material, int instanceAreaLightsIndex,
+                                       const MediumInterface &mediumInterface,
+                                       FloatTexture alpha)
+    : shape(shape),
+      material(material),
+      instanceAreaLightsIndex(instanceAreaLightsIndex),
       mediumInterface(mediumInterface),
       alpha(alpha) {
     primitiveMemory += sizeof(*this);
@@ -71,7 +85,7 @@ pstd::optional<ShapeIntersection> GeometricPrimitive::Intersect(const Ray &r,
     }
 
     // Initialize _SurfaceInteraction_ after _Shape_ intersection
-    si->intr.SetIntersectionProperties(material, areaLight, &mediumInterface, r.medium);
+    si->intr.SetIntersectionProperties(material, areaLight, instanceAreaLightsIndex, &mediumInterface, r.medium);
 
     return si;
 }
@@ -103,7 +117,7 @@ pstd::optional<ShapeIntersection> SimplePrimitive::Intersect(const Ray &r,
     if (!si)
         return {};
 
-    si->intr.SetIntersectionProperties(material, nullptr, nullptr, r.medium);
+    si->intr.SetIntersectionProperties(material, nullptr, -1, nullptr, r.medium);
 
     return si;
 }
@@ -121,6 +135,8 @@ pstd::optional<ShapeIntersection> TransformedPrimitive::Intersect(const Ray &r,
     // Return transformed instance's intersection information
     si->intr = (*renderFromPrimitive)(si->intr);
     CHECK_GE(Dot(si->intr.n, si->intr.shading.n), 0);
+    //TODO:: replace instance intersect result area light
+    //si->intr.areaLight = areaLight;
     return si;
 }
 

@@ -92,6 +92,11 @@ class HaltonSampler {
                 RadicalInverse(1, haltonIndex / baseScales[1])};
     }
 
+    PBRT_CPU_GPU
+    int GetDim() {
+        return dimension;
+    }
+
     Sampler Clone(Allocator alloc);
     std::string ToString() const;
 
@@ -197,6 +202,13 @@ class PaddedSobolSampler {
     PBRT_CPU_GPU
     RandomizeStrategy GetRandomizeStrategy() const { return randomize; }
 
+    // *Add
+    PBRT_CPU_GPU
+    int GetDim() {
+        return dimension;
+    }
+
+
     Sampler Clone(Allocator alloc);
     std::string ToString() const;
 
@@ -293,6 +305,13 @@ class ZSobolSampler {
 
     PBRT_CPU_GPU
     Point2f GetPixel2D() { return Get2D(); }
+
+    // *Add
+    PBRT_CPU_GPU
+    int GetDim() {
+        return dimension;
+    }
+
 
     Sampler Clone(Allocator alloc);
     std::string ToString() const;
@@ -426,6 +445,13 @@ class PMJ02BNSampler {
         return {std::min(u.x, OneMinusEpsilon), std::min(u.y, OneMinusEpsilon)};
     }
 
+    // *Add
+    PBRT_CPU_GPU
+    int GetDim() {
+        return dimension;
+    }
+
+
     Sampler Clone(Allocator alloc);
     std::string ToString() const;
 
@@ -465,6 +491,13 @@ class IndependentSampler {
     Point2f Get2D() { return {rng.Uniform<Float>(), rng.Uniform<Float>()}; }
     PBRT_CPU_GPU
     Point2f GetPixel2D() { return Get2D(); }
+
+    // *Add
+    PBRT_CPU_GPU
+    int GetDim() {return -1;}
+
+    PBRT_CPU_GPU
+    int SetDim(int dim) {return -1;}
 
     Sampler Clone(Allocator alloc);
     std::string ToString() const;
@@ -533,6 +566,12 @@ class SobolSampler {
         }
 
         return u;
+    }
+
+    // *Add
+    PBRT_CPU_GPU
+    int GetDim() {
+        return dimension;
     }
 
     Sampler Clone(Allocator alloc);
@@ -618,6 +657,13 @@ class StratifiedSampler {
     PBRT_CPU_GPU
     Point2f GetPixel2D() { return Get2D(); }
 
+    // *Add
+    PBRT_CPU_GPU
+    int GetDim() {
+        return dimension;
+    }
+
+
     Sampler Clone(Allocator alloc);
     std::string ToString() const;
 
@@ -671,6 +717,11 @@ class MLTSampler {
 
     PBRT_CPU_GPU
     Point2f GetPixel2D();
+
+    // *Add
+    PBRT_CPU_GPU
+    int GetDim() {return -1;}
+
 
     Sampler Clone(Allocator alloc);
 
@@ -792,6 +843,10 @@ inline Point2f Sampler::GetPixel2D() {
     return Dispatch(get);
 }
 
+inline int Sampler::GetDim() {
+    auto get = [&](auto ptr) { return ptr->GetDim(); };
+    return Dispatch(get);
+}
 // Sampler Inline Functions
 template <typename S>
 inline PBRT_CPU_GPU CameraSample GetCameraSample(S sampler, Point2i pPixel,

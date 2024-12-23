@@ -170,6 +170,9 @@ struct InstanceDefinitionSceneEntity {
     InternedString name;
     FileLoc loc;
     std::vector<ShapeSceneEntity> shapes;
+    //*Add
+    // worldFromObject for instance light
+    const Transform *worldFromObject = nullptr;
     std::vector<AnimatedShapeSceneEntity> animatedShapes;
 };
 
@@ -307,12 +310,22 @@ class BasicScene {
                          std::map<std::string, Material> *namedMaterials,
                          std::vector<Material> *materials);
 
+    // *Add 
+    // instanceNameToAreaLights for instance arealight 
     std::vector<Light> CreateLights(
         const NamedTextures &textures,
         std::map<int, pstd::vector<Light> *> *shapeIndexToAreaLights);
 
+    std::vector<Light> CreateInstanceShapeLights(
+        const NamedTextures &textures,
+        const ShapeSceneEntity sh,
+        const Transform renderFromInstance
+        );
+
     std::map<std::string, Medium> CreateMedia();
 
+    // *Add 
+    // instanceNameToAreaLights for instance arealight
     Primitive CreateAggregate(
         const NamedTextures &textures,
         const std::map<int, pstd::vector<Light> *> &shapeIndexToAreaLights,
@@ -340,6 +353,9 @@ class BasicScene {
 
     void startLoadingNormalMaps(const ParameterDictionary &parameters);
 
+    // *Add
+    void startLoadingEmissiveMaps(const ParameterDictionary &parameters);
+
     // BasicScene Private Members
     AsyncJob<Sampler> *samplerJob = nullptr;
     mutable ThreadLocal<Allocator> threadAllocators;
@@ -355,6 +371,11 @@ class BasicScene {
     std::mutex materialMutex;
     std::map<std::string, AsyncJob<Image *> *> normalMapJobs;
     std::map<std::string, Image *> normalMaps;
+
+    // *Add
+    // for diffuse area light emissive texture cause pbrt's area light's emissive texture image don't share same memory.
+    std::map<std::string, AsyncJob<Image *> *> emissiveMapJobs;
+    std::map<std::string, Image *> emissiveMaps;
 
     std::vector<std::pair<std::string, SceneEntity>> namedMaterials;
     std::vector<SceneEntity> materials;
@@ -422,6 +443,8 @@ class BasicSceneBuilder : public ParserTarget {
     void LightSource(const std::string &name, ParsedParameterVector params, FileLoc loc);
     void AreaLightSource(const std::string &name, ParsedParameterVector params,
                          FileLoc loc);
+    //TODO:: Instance Area Light Add
+    // void AreaLightSource();
     void Shape(const std::string &name, ParsedParameterVector params, FileLoc loc);
     void ReverseOrientation(FileLoc loc);
     void ObjectBegin(const std::string &name, FileLoc loc);

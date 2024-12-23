@@ -111,6 +111,207 @@ class RayIntegrator : public ImageTileIntegrator {
                                VisibleSurface *visibleSurface) const = 0;
 };
 
+// *Add
+// Wavefront-Style Interator for test GPU (different from GPGPU) style raytracing.
+// PBRT use ThreadPool which is MIMD, and wavefront is optimizate for SIMT though.
+// WavefrontIntegrator Definition
+class WavefrontIntegrator : public Integrator {
+  protected:
+    // Buffer for passing data between stage
+    struct RayStageBuffer {
+        RayStageBuffer() = default;
+        pstd::optional<ShapeIntersection> isect = {};
+        pstd::optional<BSDF> bsdf = {};
+        
+        pstd::optional<SampledLight> sampledLight = {};
+        pstd::optional<LightLiSample> ls = {};
+        SampledSpectrum f = SampledSpectrum(0.f);
+
+    };
+
+    // Buffer for passing data between Bounce
+    struct RayBounceBuffer/*RayDepthBuffer*/ {
+        RayBounceBuffer() = default;
+        pstd::optional<RayDifferential> ray = {};
+        Float p_b, etaScale = 1;
+        bool specularBounce = false, anyNonSpecularBounces = false, rayFinished = false;
+        LightSampleContext prevIntrCtx;
+        int depth = 0;
+        SampledSpectrum beta = SampledSpectrum(1.f);
+
+        SampledWavelengths lambda;
+        SampledSpectrum weight = SampledSpectrum(1.f);
+        Float filterWeight = 1;
+        // save for sampler
+        int dim = 0;
+        // pbrt ParallelJob2D divide job first by image tile, 
+        // maybe record pPixel mapping to skip pixel that already finished 
+        // Point2i pPixel;
+        // buffer for output to image
+        SampledSpectrum L = SampledSpectrum(0.f);
+    };
+  public:
+    // ImageTileIntegrator Public Methods
+    // TODO:: maybe create a light only aggregate to separete BRDF light sample
+    WavefrontIntegrator(int fps, int maxDepth, Camera camera, Sampler sampler, Primitive aggregate, /*Primitive lightAggregate,*/
+                        std::vector<Light> lights, const std::string &lightSampleStrategy, bool regularize);
+    virtual void SpawnFirstRays(Point2i pPixel, RayBounceBuffer &buffer, Sampler &sampler, Float aTime);
+    virtual void IntersectSurfaces(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer);
+    virtual void HitEmittedLight(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer);
+    // get bsdfs and skip medium surfaces. 
+    // maybe merge into IntersectSurfaces?
+    virtual void GetBSDF(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, ScratchBuffer &scratchBuffer, Sampler &sampler);
+    virtual void SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, Sampler &sampler);
+    // check light occluded and shading
+    virtual void Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer);
+    virtual void SpawnBrdfRays(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, Sampler &sampler);
+
+  protected:
+
+    int fps;
+
+    // RayBuffer for wavefront
+    Array2D<RayStageBuffer> rayStageBuffers;
+    Array2D<RayBounceBuffer> rayBounceBuffers;
+
+    Camera camera;
+    Sampler samplerPrototype;
+    bool regularize;
+    int maxDepth;
+    LightSampler lightSampler;
+
+    bool disableBSDFLightSample = true;
+
+    //for motion vector
+    Point3f currentPCamera;
+    Point3f prevPCamera;
+
+    bool allFinished = true;
+};
+
+// RayIntegrator Definition
+class WavefrontPathIntegrator : public WavefrontIntegrator {
+  public:
+    // RayIntegrator Public Methods
+    WavefrontPathIntegrator(int fps, int maxDepth, Camera camera, Sampler sampler, Primitive aggregate,
+                  std::vector<Light> lights, const std::string &lightSampleStrategy, bool regularize);
+
+    static std::unique_ptr<WavefrontPathIntegrator> Create(const ParameterDictionary &parameters,
+                                                  Camera camera, Sampler sampler,
+                                                  Primitive aggregate,
+                                                  std::vector<Light> lights,
+                                                  const FileLoc *loc);
+
+    std::string ToString() const;
+
+    void Render();
+};
+
+class ReSTIRIntegrator : public WavefrontIntegrator {
+  public:
+
+      struct RestirParameter {
+      RestirParameter() = default;
+
+      bool reUseVisibility = false;
+      // local light DI RIS sample count
+      int numLocalLightDISample = 8;
+
+      // normal similarity threshold
+      Float Nthreshold = 0.2;
+      // depth similarity threshold
+      Float Dthreshold = 0.1;
+
+      //spatial parameter
+      bool isSpatial = true;
+      Float spatialRadius = 16.0f;
+      int numSpatialSamples = 8;
+      Float maxSpatialDistance = 16.f;
+
+      //temporal parameter
+      bool isTemporal = true;
+      int maxAge = 16;
+      int historyLimit = 20;
+
+      bool isSpatiotemporal = false;
+    };
+    // RayIntegrator Public Methods
+    ReSTIRIntegrator(int fps, int maxDepth, RestirParameter restirSetting, Camera camera, Sampler sampler, Primitive aggregate,
+                  std::vector<Light> lights, const std::string &lightSampleStrategy, bool regularize);
+
+    static std::unique_ptr<ReSTIRIntegrator> Create(const ParameterDictionary &parameters,
+                                                  Camera camera, Sampler sampler,
+                                                  Primitive aggregate,
+                                                  std::vector<Light> lights,
+                                                  const FileLoc *loc);
+
+    struct DIReservoir {
+        DIReservoir() = default;
+
+        pstd::optional<SampledLight> sampledLight = {};
+        pstd::optional<LightLiSample> ls = {};
+        Point2f uv;
+
+        bool visibility = true;
+        bool isVisCheck = false;
+        Float targetPdf = 0.f;
+        Float weightSum = 0.f;
+        Float W = 0.f;
+        Point2i spatialDistance = Point2i();
+        int M = 0;
+        int age = 0;
+    };
+
+
+
+    bool checkNormalSimilar(Normal3f n1, Normal3f n2, float threshold);
+    bool checkDepthSimilar(Float d1, Float d2, float threshold);
+    bool checkMaterialSimilar(BSDF m1, BSDF m2, float threshold);
+
+    // update reservoir weight and return if it should do swap
+    bool streamReservoir(DIReservoir &reservoir, float targetPdf, float sourcePdf, Sampler &sampler);
+
+    // combine reservoir and return if it should do swap
+    bool combineReservoir(DIReservoir &dst, const DIReservoir &src, float targetPdf, Sampler &sampler);
+
+    void finalResampling(DIReservoir &reservoir, const RayStageBuffer &rsBuffer, bool checkVisibility, bool discardIfInvisible);
+
+    void storeVisibility(DIReservoir &reservoir, bool visibility, bool discardIfInvisible);
+    // sample light with WRS
+    void SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir &reservoir, Sampler &sampler);
+
+    // combine reservoir temporal
+    void TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler);
+    
+    // combine reservoir spatial
+    void SpatialResample(Point2i pPixel, const Array2D<DIReservoir> &srcReservoir, const Array2D<RayStageBuffer> &srcRs, const Array2D<RayBounceBuffer> &srcRb, DIReservoir &dstReservoir, Sampler &sampler);
+
+    // combine reservoir spatiotemporal
+    void SpatialtemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler);
+
+    // check light occluded and shading for WRS
+    void Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir& reservoir);
+
+    Array2D<DIReservoir> DIReservoirBuffers;
+
+    Array2D<RayStageBuffer> firstDIRayStageBuffers;
+    Array2D<RayStageBuffer> prevFirstDIRayStageBuffers;
+
+    Array2D<DIReservoir> firstDIReservoirBuffers;
+    Array2D<DIReservoir> prevFirstDIReservoirBuffers;
+
+    RestirParameter restirSetting;
+
+    Float currentTime = 0.f;
+    int totalFrame = 0;
+
+    bool isFirstRay = true;
+
+    std::string ToString() const;
+
+    void Render();
+};
+
 // RandomWalkIntegrator Definition
 class RandomWalkIntegrator : public RayIntegrator {
   public:
@@ -229,11 +430,52 @@ class PathIntegrator : public RayIntegrator {
     SampledSpectrum SampleLd(const SurfaceInteraction &intr, const BSDF *bsdf,
                              SampledWavelengths &lambda, Sampler sampler) const;
 
+    SampledSpectrum SampleAllLd(const SurfaceInteraction &intr, const BSDF *bsdf,
+                             SampledWavelengths &lambda, Sampler sampler) const;
+
     // PathIntegrator Private Members
     int maxDepth;
     LightSampler lightSampler;
     bool regularize;
 };
+
+////////////////////////////////////////RIS Implement////////////////////////////////////////////////////
+
+// RIS PathIntegrator Definition
+class RisPathIntegrator : public RayIntegrator {
+  public:
+    // PathIntegrator Public Methods
+    RisPathIntegrator(int maxDepth, int numRisSampleLd, Camera camera, Sampler sampler, Primitive aggregate,
+                   std::vector<Light> lights,
+                   const std::string &lightSampleStrategy = "uniform",
+                   bool regularize = false);
+
+    SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda, Sampler sampler,
+                       ScratchBuffer &scratchBuffer,
+                       VisibleSurface *visibleSurface) const;
+
+    static std::unique_ptr<RisPathIntegrator> Create(const ParameterDictionary &parameters,
+                                                  Camera camera, Sampler sampler,
+                                                  Primitive aggregate,
+                                                  std::vector<Light> lights,
+                                                  const FileLoc *loc);
+
+    std::string ToString() const;
+
+  private:
+    // PathIntegrator Private Methods
+    SampledSpectrum SampleLd(const SurfaceInteraction &intr, const BSDF *bsdf,
+                             SampledWavelengths &lambda, Sampler sampler) const;
+
+    // PathIntegrator Private Members
+    int maxDepth;
+    LightSampler lightSampler;
+    bool regularize;
+
+    int numRisSampleLd;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // SimpleVolPathIntegrator Definition
 class SimpleVolPathIntegrator : public RayIntegrator {
