@@ -214,6 +214,7 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
       RestirParameter() = default;
 
       bool reUseVisibility = false;
+      bool unbiased = true;
       // local light DI RIS sample count
       int numLocalLightDISample = 8;
 
@@ -226,7 +227,7 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
       bool isSpatial = true;
       Float spatialRadius = 16.0f;
       int numSpatialSamples = 8;
-      Float maxSpatialDistance = 16.f;
+      Float maxSpatialDistance = 32.f;
 
       //temporal parameter
       bool isTemporal = true;
@@ -257,7 +258,7 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
         Float targetPdf = 0.f;
         Float weightSum = 0.f;
         Float W = 0.f;
-        Point2i spatialDistance = Point2i();
+        Point2i spatialDistance = Point2i(0,0);
         int M = 0;
         int age = 0;
     };

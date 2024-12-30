@@ -966,8 +966,11 @@ std::unique_ptr<ReSTIRIntegrator> ReSTIRIntegrator::Create(
         restirSetting.isTemporal = true;
     else if(restirStrategy == "spatial")
         restirSetting.isSpatial = true;
-    else if(restirStrategy == "spatiotemporal")
-        restirSetting.isSpatiotemporal = true;
+    else if(restirStrategy == "spatiotemporal"){
+        restirSetting.isTemporal = true;
+        restirSetting.isSpatial = true;
+        // restirSetting.isSpatiotemporal = true;
+    }
     else{
         Error(R"(ReSTIR mode "%s" unknown. Using "Spatiotemporal".)",
               restirStrategy.c_str());
@@ -980,7 +983,7 @@ std::unique_ptr<ReSTIRIntegrator> ReSTIRIntegrator::Create(
 
     restirSetting.spatialRadius = parameters.GetOneFloat("spatialRadius", 16.0f);
     restirSetting.numSpatialSamples = parameters.GetOneInt("numSpatialSamples", 8);
-    restirSetting.maxSpatialDistance = parameters.GetOneFloat("maxSpatialDistance", 16.0f);
+    restirSetting.maxSpatialDistance = parameters.GetOneFloat("maxSpatialDistance", 32.0f);
 
     restirSetting.maxAge = parameters.GetOneInt("maxAge", 16);
     restirSetting.historyLimit = parameters.GetOneInt("historyLimit", 20);
@@ -1019,6 +1022,7 @@ bool ReSTIRIntegrator::combineReservoir(DIReservoir &dst, const DIReservoir &src
         dst.M = M;
         dst.targetPdf = targetPdf;
         dst.visibility = src.visibility;
+        dst.isVisCheck = src.isVisCheck;
         if(!restirSetting.reUseVisibility){
             dst.isVisCheck = false;
             dst.visibility = true;
@@ -1041,7 +1045,7 @@ void ReSTIRIntegrator::finalResampling(DIReservoir &reservoir, const RayStageBuf
         return;
     }
     reservoir.W = (reservoir.weightSum / reservoir.M) / reservoir.targetPdf;
-    reservoir.weightSum = reservoir.targetPdf * reservoir.W * reservoir.M;
+    // reservoir.weightSum = reservoir.targetPdf * reservoir.W * reservoir.M;
 
     if(!reservoir.isVisCheck && checkVisibility){
         reservoir.isVisCheck = true;
@@ -1096,45 +1100,41 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
 
     DIReservoir& prevReservoir = prevReservoirs[prevPixel];
     const RayStageBuffer& prevRs = prevRsBuffers[prevPixel];
-    // dstReservoir.weightSum = dstReservoir.targetPdf * dstReservoir.W * dstReservoir.M;
-    prevReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * dstReservoir.M), prevReservoir.M);
+    dstReservoir.weightSum = dstReservoir.targetPdf * dstReservoir.W * dstReservoir.M;
+    prevReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * std::max<int>(restirSetting.numLocalLightDISample, dstReservoir.M)), prevReservoir.M);
+    // prevReservoir.weightSum = prevReservoir.targetPdf * prevReservoir.W * prevReservoir.M;
 
     if (!prevRs.bsdf){
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
         return;
     }
     if (!prevRs.isect){
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
         return;
     }
 
     Float rng = sampler.Get1D();
     if(prevReservoir.age > restirSetting.maxAge  * (0.5 + rng * 0.5)){
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
         return;
     }
 
     if(!prevReservoir.M){
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
         return;
     }
+
+    // if(!prevReservoir.visibility)
+    //     return;
 
     // TODO:: check prevRs.isect->tHit, dstRs.isect->tHit is depth?
     if(!checkNormalSimilar(prevRs.isect.value().intr.n, dstRs.isect.value().intr.n, restirSetting.Nthreshold)
         || !checkDepthSimilar(prevRs.isect->tHit, dstRs.isect->tHit, restirSetting.Dthreshold)){
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
-        return;
-    }
-    if(!prevReservoir.targetPdf){
-        dstReservoir.M += prevReservoir.M;
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
         return;
     }
 
     pstd::optional<SampledLight> sampledLight = prevReservoir.sampledLight;
     if (!sampledLight || !sampledLight->p){
-        dstReservoir.M += prevReservoir.M;
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        if(!restirSetting.unbiased)
+            dstReservoir.M += prevReservoir.M;
+        // if(!restirSetting.isSpatial)
+            finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
         return;
     }
     LightSampleContext ctx(dstRs.isect->intr);
@@ -1149,8 +1149,10 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     Light light = sampledLight->light;
     pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, dstRb.lambda, true);
     if (!ls || !ls->L || ls->pdf == 0){
-        dstReservoir.M += prevReservoir.M;
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        if(!restirSetting.unbiased)
+            dstReservoir.M += prevReservoir.M;
+        // if(!restirSetting.isSpatial)
+            finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
         return;
     }
 
@@ -1167,8 +1169,18 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     pstd::optional<BSDF> bsdf = dstRs.bsdf;
     SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, dstRs.isect->intr.shading.n);
     if(!f){
-        dstReservoir.M += prevReservoir.M;
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        if(!restirSetting.unbiased)
+            dstReservoir.M += prevReservoir.M;
+        // if(!restirSetting.isSpatial)
+            finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        return;
+    }
+
+    if(!prevReservoir.targetPdf){
+        // if(!restirSetting.unbiased)
+        //     dstReservoir.M += prevReservoir.M;
+        // if(!restirSetting.isSpatial)
+        //     finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
         return;
     }
     // RIS target PDF
@@ -1183,6 +1195,7 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
         dstReservoir.uv = uLight;
         dstReservoir.sampledLight = sampledLight;
         dstReservoir.ls = ls;
+        dstReservoir.spatialDistance = prevReservoir.spatialDistance;
         dstReservoir.age = prevReservoir.age;
         dstReservoir.age++;
     }
@@ -1229,7 +1242,8 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     //
     // dstReservoir.M = unBiasedM;
 
-    finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+    // if(!restirSetting.isSpatial)
+        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
 }
 
 // combine reservoir spatial
@@ -1247,8 +1261,8 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
     if (!centerRs.isect)
         return;
 
-    // if(!isTemporal)
-    //     dstReservoir.weightSum = dstReservoir.targetPdf * dstReservoir.W * dstReservoir.M;
+    if(!restirSetting.isTemporal)
+        dstReservoir.weightSum = dstReservoir.targetPdf * dstReservoir.W * dstReservoir.M;
     // std::vector<Point2i> offsetPixelUnbiased;
 
     // Sample a point on the light source for direct lighting
@@ -1264,7 +1278,8 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
     for (size_t i = 0; i < restirSetting.numSpatialSamples; i++)
     {
         Point2f uv = sampler.Get2D();
-        Point2i offsetPixel = pPixel + Point2i(((uv - Point2f(0.5f, 0.5f)) * restirSetting.spatialRadius ));
+        Point2i offset = Point2i(((uv - Point2f(0.5f, 0.5f)) * restirSetting.spatialRadius ));
+        Point2i offsetPixel = pPixel + offset;
         offsetPixel.x = pbrt::Clamp(offsetPixel.x, 0, srcReservoir.XSize() - 1);
         offsetPixel.y = pbrt::Clamp(offsetPixel.y, 0, srcReservoir.YSize() - 1);
 
@@ -1274,7 +1289,7 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
         const RayStageBuffer& spatialRsBuffer = srcRs[offsetPixel];
         const RayBounceBuffer& spatialRbBuffer = srcRb[offsetPixel];
         DIReservoir spatialReservoir = srcReservoir[offsetPixel];
-        spatialReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * dstReservoir.M), spatialReservoir.M);
+        spatialReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * std::max<int>(restirSetting.numLocalLightDISample, dstReservoir.M)), spatialReservoir.M);
 
         if(!spatialRbBuffer.ray)
             continue;
@@ -1288,23 +1303,22 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
         if(!spatialReservoir.M)
             continue;
 
-        // TODO:: check prevRs.isect->tHit, dstRs.isect->tHit is depth?
         if(!checkNormalSimilar(spatialRsBuffer.isect.value().intr.n, centerRs.isect.value().intr.n, restirSetting.Nthreshold)
             || !checkDepthSimilar(spatialRsBuffer.isect->tHit, centerRs.isect->tHit, restirSetting.Dthreshold))
             continue;
 
+        // if(Length(Vector2f(spatialReservoir.spatialDistance + offset)) > restirSetting.maxSpatialDistance)
+        //     continue;
+
+        // if(!spatialReservoir.visibility)
+        //     continue;
         // offsetPixelUnbiased.push_back(offsetPixel);
-
-        
-
-        if(!spatialReservoir.targetPdf){
-            dstReservoir.M += spatialReservoir.M;
-            continue;
-        }
 
         pstd::optional<SampledLight> sampledLight = spatialReservoir.sampledLight;
         if (!sampledLight || !sampledLight->p){
-            dstReservoir.M += spatialReservoir.M;
+            // if(!restirSetting.unbiased)
+                dstReservoir.M += spatialReservoir.M;
+            // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
             continue;
         }
 
@@ -1313,7 +1327,11 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
         Light light = sampledLight->light;
         pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, centerRb.lambda, true);
         if (!ls || !ls->L || ls->pdf == 0){
-            dstReservoir.M += spatialReservoir.M;
+            if(!restirSetting.unbiased)
+                dstReservoir.M += spatialReservoir.M;
+                
+            // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
+
             continue;
         }
 
@@ -1327,7 +1345,16 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
         pstd::optional<BSDF> bsdf = centerRs.bsdf;
         SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, centerRs.isect->intr.shading.n);
         if(!f){
-            dstReservoir.M += spatialReservoir.M;
+            if(!restirSetting.unbiased)
+                dstReservoir.M += spatialReservoir.M;
+            // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
+            continue;
+        }
+
+        if(!spatialReservoir.targetPdf){
+            // if(!restirSetting.unbiased)
+            //     dstReservoir.M += spatialReservoir.M;
+            // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
             continue;
         }
 
@@ -1347,6 +1374,8 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
             dstReservoir.age = spatialReservoir.age;
             dstReservoir.age++;
         }
+
+        // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
     }
 
     // unbiased test
@@ -1396,7 +1425,7 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
     //
     // dstReservoir.M = unBiasedM;
 
-    finalResampling(dstReservoir, centerRs, true, restirSetting.reUseVisibility);
+    finalResampling(dstReservoir, centerRs, restirSetting.reUseVisibility, restirSetting.reUseVisibility);
 }
 
 void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler){
@@ -1454,19 +1483,16 @@ void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservo
         if(!spatialReservoir.M)
             continue;
 
-        // TODO:: check prevRs.isect->tHit, dstRs.isect->tHit is depth?
         if(!checkNormalSimilar(spatialRsBuffer.isect.value().intr.n, dstRs.isect.value().intr.n, restirSetting.Nthreshold)
             || !checkDepthSimilar(spatialRsBuffer.isect->tHit, dstRs.isect->tHit, restirSetting.Dthreshold))
             continue;
 
         // offsetPixelUnbiased.push_back(offsetPixel);
 
-        
-
-        if(!spatialReservoir.targetPdf){
-            dstReservoir.M += spatialReservoir.M;
-            continue;
-        }
+        // if(!spatialReservoir.targetPdf){
+        //     dstReservoir.M += spatialReservoir.M;
+        //     continue;
+        // }
 
         pstd::optional<SampledLight> sampledLight = spatialReservoir.sampledLight;
         if (!sampledLight || !sampledLight->p){
@@ -1562,7 +1588,7 @@ void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservo
     //
     // dstReservoir.M = unBiasedM;
 
-    finalResampling(dstReservoir, dstRs, true, restirSetting.reUseVisibility);
+    finalResampling(dstReservoir, dstRs, restirSetting.reUseVisibility, restirSetting.reUseVisibility);
 }
 
 // sample light with WRS
@@ -1636,6 +1662,7 @@ void ReSTIRIntegrator::SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &r
     reservoir = localLight;
 
     finalResampling(reservoir, rsBuffer, true, true);
+    // reservoir.weightSum = reservoir.targetPdf * reservoir.W * reservoir.M;
 }
 
 // check light occluded and shading for WRS
@@ -1654,13 +1681,16 @@ void ReSTIRIntegrator::Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuff
 
     if (!reservoir.ls || !reservoir.ls->L || reservoir.ls->pdf == 0)
         return;
-    
-    if(!restirSetting.reUseVisibility){
-        storeVisibility(reservoir, Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight), restirSetting.reUseVisibility);
-    }
 
-    if(!reservoir.visibility)
+    if(!Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight))
         return;
+    
+    // if(!restirSetting.reUseVisibility){
+    //     storeVisibility(reservoir, Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight), restirSetting.reUseVisibility);
+    // }
+
+    // if(!reservoir.visibility)
+    //     return;
     
     Vector3f wo = rsBuffer.isect->intr.wo, wi = reservoir.ls->wi;
     SampledSpectrum f = rsBuffer.bsdf->f(wo, wi) * AbsDot(wi, rsBuffer.isect->intr.shading.n);
