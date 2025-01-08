@@ -962,19 +962,30 @@ std::unique_ptr<ReSTIRIntegrator> ReSTIRIntegrator::Create(
     RestirParameter restirSetting;
 
     std::string restirStrategy = parameters.GetOneString("restirmode", "spatiotemporal");
-    if(restirStrategy == "temporal")
+    if(restirStrategy == "temporal"){
         restirSetting.isTemporal = true;
-    else if(restirStrategy == "spatial")
+        restirSetting.isSpatial = false;
+    }
+    else if(restirStrategy == "spatial"){
+        restirSetting.isTemporal = false;
         restirSetting.isSpatial = true;
+    }
     else if(restirStrategy == "spatiotemporal"){
         restirSetting.isTemporal = true;
         restirSetting.isSpatial = true;
         // restirSetting.isSpatiotemporal = true;
     }
+    else if(restirStrategy == "none"){
+        restirSetting.isTemporal = false;
+        restirSetting.isSpatial = false;
+        // restirSetting.isSpatiotemporal = true;
+    }
     else{
         Error(R"(ReSTIR mode "%s" unknown. Using "Spatiotemporal".)",
               restirStrategy.c_str());
-        restirSetting.isSpatiotemporal = true;
+        restirSetting.isTemporal = true;
+        restirSetting.isSpatial = true;
+        // restirSetting.isSpatiotemporal = true;
     }
     restirSetting.numLocalLightDISample = parameters.GetOneInt("numLocalLightDISample", 8);
 
@@ -1078,7 +1089,7 @@ bool ReSTIRIntegrator::checkDepthSimilar(Float d1, Float d2, float threshold){
 }
 
  // combine reservoir temporal
-void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler){
+void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, const RayStageBuffer &dstRs, const RayBounceBuffer &dstRb, Sampler &sampler){
     
     if(!dstRb.ray)
         return;
@@ -1090,13 +1101,17 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
         return;
 
     //TODO:: motion vector to get pPixel
-    // Float prevTime = currentTime -= 1.0f / totalFrame;
-    // if(prevTime < 0.f)
-    //     return;
-    //
-    // Point3f prevPos = camera.reProjected(currentPCamera, prevTime);
+    Float prevTime = currentTime - 1.0f / totalFrame;
+    if(prevTime < 0.f)
+        return;
+    
+    Point3f prevPos = camera.reProjected(dstRs.isect->intr.p(), prevTime);
+    Point2i prevPixel = Point2i(prevPos.x, prevPos.y);
+    
+    if(prevPixel.x < 0 || prevPixel.y < 0 || prevPixel.x >= prevReservoirs.XSize() || prevPixel.y >= prevReservoirs.YSize())
+        return;
 
-    Point2i prevPixel = pPixel;
+    // Point2i prevPixel = pPixel;
 
     DIReservoir& prevReservoir = prevReservoirs[prevPixel];
     const RayStageBuffer& prevRs = prevRsBuffers[prevPixel];
@@ -1123,7 +1138,6 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     // if(!prevReservoir.visibility)
     //     return;
 
-    // TODO:: check prevRs.isect->tHit, dstRs.isect->tHit is depth?
     if(!checkNormalSimilar(prevRs.isect.value().intr.n, dstRs.isect.value().intr.n, restirSetting.Nthreshold)
         || !checkDepthSimilar(prevRs.isect->tHit, dstRs.isect->tHit, restirSetting.Dthreshold)){
         return;
@@ -1134,7 +1148,7 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
         if(!restirSetting.unbiased)
             dstReservoir.M += prevReservoir.M;
         // if(!restirSetting.isSpatial)
-            finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+            finalResampling(dstReservoir, dstRs, false, restirSetting.reUseVisibility);
         return;
     }
     LightSampleContext ctx(dstRs.isect->intr);
@@ -1152,7 +1166,7 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
         if(!restirSetting.unbiased)
             dstReservoir.M += prevReservoir.M;
         // if(!restirSetting.isSpatial)
-            finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+            finalResampling(dstReservoir, dstRs, false, restirSetting.reUseVisibility);
         return;
     }
 
@@ -1172,7 +1186,7 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
         if(!restirSetting.unbiased)
             dstReservoir.M += prevReservoir.M;
         // if(!restirSetting.isSpatial)
-            finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+            finalResampling(dstReservoir, dstRs, false, restirSetting.reUseVisibility);
         return;
     }
 
@@ -1243,7 +1257,7 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     // dstReservoir.M = unBiasedM;
 
     // if(!restirSetting.isSpatial)
-        finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        finalResampling(dstReservoir, dstRs, false, restirSetting.reUseVisibility);
 }
 
 // combine reservoir spatial
@@ -1732,7 +1746,9 @@ void ReSTIRIntegrator::Render() {
     totalFrame = fps * (camera.GetShutterClose() - camera.GetShutterOpen());
 
     // Declare common variables for rendering image in tiles
-    ThreadLocal<ScratchBuffer> scratchBuffers([]() { return ScratchBuffer(2048 * 2048); });
+
+    ThreadLocal<ScratchBuffer> scratchBuffers([]() { return ScratchBuffer(1024 * 1024); });
+    ThreadLocal<ScratchBuffer> prevScratchBuffers([]() { return ScratchBuffer(1024 * 1024); });
     ThreadLocal<Sampler> samplers([this]() { return samplerPrototype.Clone(); });
     // TODO::divide progress bar more properly
     ProgressReporter progress(int64_t(spp * totalFrame), "Rendering",
@@ -1774,11 +1790,13 @@ void ReSTIRIntegrator::Render() {
     //         ErrorExit("%s: %s", Options->mseReferenceOutput, ErrorString());
     // }
 
+    std::string frameId_str = std::string(std::to_string(totalFrame).length() - std::min(std::to_string(totalFrame).length(), std::to_string(currentFrame).length()), '0') + std::to_string(currentFrame);
+    std::string filename = camera.GetFilm().GetFilename().insert(camera.GetFilm().GetFilename().find_last_of("."), "_" + frameId_str);
     // TODO:: animated display
     // Connect to display server if needed
     if (!Options->displayServer.empty()) {
         Film film = camera.GetFilm();
-        DisplayDynamic(film.GetFilename(), Point2i(pixelBounds.Diagonal()),
+        DisplayDynamic(filename, Point2i(pixelBounds.Diagonal()),
                        {"R", "G", "B"},
                        [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
                            int index = 0;
@@ -1793,6 +1811,7 @@ void ReSTIRIntegrator::Render() {
     }
 
     int currentSampleIndex = 0;
+    int currentSampleCount = 0;
 
     // reset rayStageBuffer
     firstDIRayStageBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
@@ -1803,14 +1822,14 @@ void ReSTIRIntegrator::Render() {
     prevFirstDIReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
 
     // Render image in waves
-    while (currentTime < 1.0f) {
+    while (currentTime <= 1.0f) {
         // Render current wave's image tiles in parallel
         // TODO:: maybe use ParallelFor1D to properly skip pixel that finished soon.
         threadSampleIndex = currentSampleIndex;
 
         // ping-pong
-        Array2D<RayStageBuffer>* rsBuffers = currentSampleIndex % 2 ? &firstDIRayStageBuffers : &prevFirstDIRayStageBuffers;
-        Array2D<DIReservoir>* reservoirBuffers = currentSampleIndex % 2 ? &firstDIReservoirBuffers : &prevFirstDIReservoirBuffers;
+        Array2D<RayStageBuffer>* rsBuffers = currentSampleCount % 2 ? &firstDIRayStageBuffers : &prevFirstDIRayStageBuffers;
+        Array2D<DIReservoir>* reservoirBuffers = currentSampleCount % 2 ? &firstDIReservoirBuffers : &prevFirstDIReservoirBuffers;
         // reset buffer
         rayBounceBuffers = Array2D<RayBounceBuffer>(camera.GetFilm().PixelBounds());
 
@@ -1827,7 +1846,7 @@ void ReSTIRIntegrator::Render() {
 
                 RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
                 // Render samples in pixel _pPixel_
-                sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+                sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
                 SpawnFirstRays(pPixel, rbBuffer, sampler, currentTime);
                 
@@ -1878,7 +1897,7 @@ void ReSTIRIntegrator::Render() {
             stageIndex = 3;
             ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
                 // Render image tile given by _tileBounds_
-                ScratchBuffer &scratchBuffer = scratchBuffers.Get();
+                ScratchBuffer &scratchBuffer = currentSampleCount % 2 ? scratchBuffers.Get() : prevScratchBuffers.Get();
                 Sampler &sampler = samplers.Get();
 
                 for (Point2i pPixel : tileBounds) {
@@ -1889,7 +1908,7 @@ void ReSTIRIntegrator::Render() {
                     RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
 
                     // Render samples in pixel _pPixel_
-                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+                    sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
                     GetBSDF(rbBuffer, rsBuffer, scratchBuffer, sampler);
 
@@ -1911,7 +1930,7 @@ void ReSTIRIntegrator::Render() {
                     RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
                     DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
 
-                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+                    sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
                     SampleLights(rbBuffer, rsBuffer, reservoir, sampler);
 
@@ -1932,13 +1951,13 @@ void ReSTIRIntegrator::Render() {
                             StatsReportPixelStart(pPixel);
                             threadPixel = pPixel;
 
-                            Array2D<DIReservoir>* prevReservoirs = currentSampleIndex % 2 ? &prevFirstDIReservoirBuffers : &firstDIReservoirBuffers;
-                            Array2D<RayStageBuffer>* prevRsBuffers = currentSampleIndex % 2 ? &prevFirstDIRayStageBuffers : &firstDIRayStageBuffers;
+                            Array2D<DIReservoir>* prevReservoirs = currentSampleCount % 2 ? &prevFirstDIReservoirBuffers : &firstDIReservoirBuffers;
+                            Array2D<RayStageBuffer>* prevRsBuffers = currentSampleCount % 2 ? &prevFirstDIRayStageBuffers : &firstDIRayStageBuffers;
                             RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
                             RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
                             DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
 
-                            sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+                            sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
                             SpatialtemporalResample(pPixel, *prevReservoirs, *prevRsBuffers, reservoir, rsBuffer, rbBuffer, sampler);
 
@@ -1958,13 +1977,13 @@ void ReSTIRIntegrator::Render() {
                                 StatsReportPixelStart(pPixel);
                                 threadPixel = pPixel;
 
-                                Array2D<DIReservoir>* prevReservoirs = currentSampleIndex % 2 ? &prevFirstDIReservoirBuffers : &firstDIReservoirBuffers;
-                                Array2D<RayStageBuffer>* prevRsBuffers = currentSampleIndex % 2 ? &prevFirstDIRayStageBuffers : &firstDIRayStageBuffers;
+                                Array2D<DIReservoir>* prevReservoirs = currentSampleCount % 2 ? &prevFirstDIReservoirBuffers : &firstDIReservoirBuffers;
+                                Array2D<RayStageBuffer>* prevRsBuffers = currentSampleCount % 2 ? &prevFirstDIRayStageBuffers : &firstDIRayStageBuffers;
                                 RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
                                 RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
                                 DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
 
-                                sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+                                sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
                                 TemporalResample(pPixel, *prevReservoirs, *prevRsBuffers, reservoir, rsBuffer, rbBuffer, sampler);
 
@@ -1988,7 +2007,7 @@ void ReSTIRIntegrator::Render() {
                                 RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
                                 DIReservoir& reservoir = spatialReservoir[pPixel];
 
-                                sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+                                sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
                                 SpatialResample(pPixel, *reservoirBuffers, *rsBuffers, rayBounceBuffers, reservoir, sampler);
 
@@ -2024,7 +2043,7 @@ void ReSTIRIntegrator::Render() {
             allFinished = true;
             ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
                 Sampler &sampler = samplers.Get();
-                ScratchBuffer &scratchBuffer = scratchBuffers.Get();
+                ScratchBuffer &scratchBuffer = currentSampleCount % 2 ? scratchBuffers.Get() : prevScratchBuffers.Get();
                 for (Point2i pPixel : tileBounds) {
                     StatsReportPixelStart(pPixel);
                     threadPixel = pPixel;
@@ -2032,7 +2051,7 @@ void ReSTIRIntegrator::Render() {
                     RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
                     RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
 
-                    sampler.StartPixelSample(pPixel, currentSampleIndex, rbBuffer.dim);
+                    sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
                     SpawnBrdfRays(rbBuffer, rsBuffer, sampler);
 
@@ -2050,7 +2069,10 @@ void ReSTIRIntegrator::Render() {
 
         }
 
-        scratchBuffers.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
+        if(currentSampleCount % 2)
+            scratchBuffers.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
+        else
+            prevScratchBuffers.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
 
         stageIndex = 9;
         ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
@@ -2086,6 +2108,7 @@ void ReSTIRIntegrator::Render() {
         // Update start and end wave
         progress.Update(1);
         currentSampleIndex++;
+        currentSampleCount++;
         
         // Optionally write current image to disk
         if (currentSampleIndex == spp || Options->writePartialImages /* || referenceImage*/) {
@@ -2105,17 +2128,47 @@ void ReSTIRIntegrator::Render() {
             // }
             if (currentSampleIndex == spp || Options->writePartialImages) {
                 camera.InitMetadata(&metadata);
-                camera.GetFilm().WriteImage(metadata, 1.0f / currentSampleIndex);
+                camera.GetFilm().WriteImage(filename, metadata, 1.0f / currentSampleIndex);
             }
         }
 
         if (currentSampleIndex == spp){
             
             currentTime += 1.0f / totalFrame;
+            currentFrame++;
             currentSampleIndex = 0;
 
-            if(currentTime == 1.0f)
+            if(currentTime > 1.0f)
                 progress.Done();
+            else{
+                
+                DisplayRemove(0);
+                ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                    for (Point2i pPixel : tileBounds) {
+                        camera.GetFilm().ResetPixel(pPixel);
+                    }
+                });
+ 
+                if (!Options->displayServer.empty()) {
+                    Film film = camera.GetFilm();
+                    frameId_str = std::string(std::to_string(totalFrame).length() - std::min(std::to_string(totalFrame).length(), std::to_string(currentFrame).length()), '0') + std::to_string(currentFrame);
+                    filename = camera.GetFilm().GetFilename().insert(camera.GetFilm().GetFilename().find_last_of("."), "_" + frameId_str);
+                    DisplayDynamic(filename, Point2i(pixelBounds.Diagonal()),
+                                {"R", "G", "B"},
+                                [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
+                                    int index = 0;
+                                    for (Point2i p : b) {
+                                        RGB rgb = film.GetPixelRGB(pixelBounds.pMin + p,
+                                                                    2.f);
+                                        for (int c = 0; c < 3; ++c)
+                                            displayValue[c][index] = rgb[c];
+                                        ++index;
+                                    }
+
+                                });
+                }
+                
+            }
         }
     }
 

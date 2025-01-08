@@ -44,6 +44,11 @@ void Film::WriteImage(ImageMetadata metadata, Float splatScale) {
     return DispatchCPU(write);
 }
 
+void Film::WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale) {
+    auto write = [&](auto ptr) { return ptr->WriteImage(imgName, metadata, splatScale); };
+    return DispatchCPU(write);
+}
+
 Image Film::GetImage(ImageMetadata *metadata, Float splatScale) {
     auto get = [&](auto ptr) { return ptr->GetImage(metadata, splatScale); };
     return DispatchCPU(get);
@@ -530,6 +535,12 @@ void RGBFilm::WriteImage(ImageMetadata metadata, Float splatScale) {
     image.Write(filename, metadata);
 }
 
+void RGBFilm::WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale) {
+    Image image = GetImage(&metadata, splatScale);
+    LOG_VERBOSE("Writing image %s with bounds %s", imgName, pixelBounds);
+    image.Write(imgName, metadata);
+}
+
 Image RGBFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
     // Convert image to RGB and compute final pixel values
     LOG_VERBOSE("Converting image to RGB and computing final weighted pixel values");
@@ -684,6 +695,12 @@ void GBufferFilm::WriteImage(ImageMetadata metadata, Float splatScale) {
     Image image = GetImage(&metadata, splatScale);
     LOG_VERBOSE("Writing image %s with bounds %s", filename, pixelBounds);
     image.Write(filename, metadata);
+}
+
+void GBufferFilm::WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale) {
+    Image image = GetImage(&metadata, splatScale);
+    LOG_VERBOSE("Writing image %s with bounds %s", imgName, pixelBounds);
+    image.Write(imgName, metadata);
 }
 
 Image GBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
@@ -948,6 +965,12 @@ void RestirGBufferFilm::WriteImage(ImageMetadata metadata, Float splatScale) {
     Image image = GetImage(&metadata, splatScale);
     LOG_VERBOSE("Writing image %s with bounds %s", filename, pixelBounds);
     image.Write(filename, metadata);
+}
+
+void RestirGBufferFilm::WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale) {
+    Image image = GetImage(&metadata, splatScale);
+    LOG_VERBOSE("Writing image %s with bounds %s", imgName, pixelBounds);
+    image.Write(imgName, metadata);
 }
 
 Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
@@ -1225,6 +1248,12 @@ void SpectralFilm::WriteImage(ImageMetadata metadata, Float splatScale) {
     Image image = GetImage(&metadata, splatScale);
     LOG_VERBOSE("Writing image %s with bounds %s", filename, pixelBounds);
     image.Write(filename, metadata);
+}
+
+void SpectralFilm::WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale) {
+    Image image = GetImage(&metadata, splatScale);
+    LOG_VERBOSE("Writing image %s with bounds %s", imgName, pixelBounds);
+    image.Write(imgName, metadata);
 }
 
 Image SpectralFilm::GetImage(ImageMetadata *metadata, Float splatScale) {

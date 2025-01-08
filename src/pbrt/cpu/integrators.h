@@ -282,7 +282,7 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
     void SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir &reservoir, Sampler &sampler);
 
     // combine reservoir temporal
-    void TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler);
+    void TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, const RayStageBuffer &dstRs, const RayBounceBuffer &dstRb, Sampler &sampler);
     
     // combine reservoir spatial
     void SpatialResample(Point2i pPixel, const Array2D<DIReservoir> &srcReservoir, const Array2D<RayStageBuffer> &srcRs, const Array2D<RayBounceBuffer> &srcRb, DIReservoir &dstReservoir, Sampler &sampler);
@@ -305,6 +305,7 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
 
     Float currentTime = 0.f;
     int totalFrame = 0;
+    int currentFrame = 0;
 
     bool isFirstRay = true;
 

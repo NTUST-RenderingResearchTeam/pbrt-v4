@@ -46,6 +46,7 @@ class Film : public TaggedPointer<RGBFilm, GBufferFilm, RestirGBufferFilm, Spect
     PBRT_CPU_GPU inline Float Diagonal() const;
 
     void WriteImage(ImageMetadata metadata, Float splatScale = 1);
+    void WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale = 1);
 
     PBRT_CPU_GPU inline RGB ToOutputRGB(SampledSpectrum L,
                                         const SampledWavelengths &lambda) const;

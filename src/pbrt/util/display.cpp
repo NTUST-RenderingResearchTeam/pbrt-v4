@@ -503,4 +503,13 @@ void DisplayDynamic(
     dynamicItems.push_back(DisplayItem(title, resolution, channelNames, getTileValues));
 }
 
+void DisplayRemove(int itemId)
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    // One last time to get the last bits
+    for (auto &item : dynamicItems)
+        item.Display(*channel);
+    dynamicItems.erase(dynamicItems.begin() + itemId);
+}
+
 }  // namespace pbrt

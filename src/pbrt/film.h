@@ -289,6 +289,8 @@ class RGBFilm : public FilmBase {
     void AddSplat(Point2f p, SampledSpectrum v, const SampledWavelengths &lambda);
 
     void WriteImage(ImageMetadata metadata, Float splatScale = 1);
+    void WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale = 1);
+
     Image GetImage(ImageMetadata *metadata, Float splatScale = 1);
 
     std::string ToString() const;
@@ -369,6 +371,7 @@ class GBufferFilm : public FilmBase {
     }
 
     void WriteImage(ImageMetadata metadata, Float splatScale = 1);
+    void WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale = 1);
     Image GetImage(ImageMetadata *metadata, Float splatScale = 1);
 
     std::string ToString() const;
@@ -453,6 +456,7 @@ class RestirGBufferFilm : public FilmBase {
     }
 
     void WriteImage(ImageMetadata metadata, Float splatScale = 1);
+    void WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale = 1);
     Image GetImage(ImageMetadata *metadata, Float splatScale = 1);
 
     std::string ToString() const;
@@ -558,6 +562,7 @@ class SpectralFilm : public FilmBase {
     void AddSplat(Point2f p, SampledSpectrum v, const SampledWavelengths &lambda);
 
     void WriteImage(ImageMetadata metadata, Float splatScale = 1);
+    void WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale = 1);
 
     // Returns an image with both RGB and spectral components, following
     // the layout proposed in "An OpenEXR Layout for Sepctral Images" by
