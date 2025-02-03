@@ -36,6 +36,8 @@ namespace pbrt {
 #define PiOver4 Float(0.78539816339744830961)
 #define Sqrt2 Float(1.41421356237309504880)
 
+#define c_DielectricSpecular Float(0.04)
+
 #else
 
 // Mathematical Constants
@@ -48,6 +50,8 @@ constexpr Float Inv4Pi = 0.07957747154594766788;
 constexpr Float PiOver2 = 1.57079632679489661923;
 constexpr Float PiOver4 = 0.78539816339744830961;
 constexpr Float Sqrt2 = 1.41421356237309504880;
+
+constexpr Float c_DielectricSpecular = 0.04;
 
 #endif
 

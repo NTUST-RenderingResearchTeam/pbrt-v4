@@ -342,6 +342,7 @@ class BasicScene {
     // BasicScene Public Members
     SceneEntity integrator, accelerator;
     const RGBColorSpace *filmColorSpace;
+    bool disableWavelengthRendering = true;
     std::vector<ShapeSceneEntity> shapes;
     std::vector<AnimatedShapeSceneEntity> animatedShapes;
     std::vector<InstanceSceneEntity> instances;
@@ -371,6 +372,11 @@ class BasicScene {
     std::mutex materialMutex;
     std::map<std::string, AsyncJob<Image *> *> normalMapJobs;
     std::map<std::string, Image *> normalMaps;
+
+    // *Add
+    // for MetalRough Material's specular, it's float3 texture, not color texture 
+    std::map<std::string, AsyncJob<Image *> *> specMapJobs;
+    std::map<std::string, Image *> specMaps;
 
     // *Add
     // for diffuse area light emissive texture cause pbrt's area light's emissive texture image don't share same memory.

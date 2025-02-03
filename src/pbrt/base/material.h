@@ -24,6 +24,7 @@ class CoatedConductorMaterial;
 class ConductorMaterial;
 class DielectricMaterial;
 class DiffuseMaterial;
+class MetalRoughnessMaterial;
 class DiffuseTransmissionMaterial;
 class HairMaterial;
 class MeasuredMaterial;
@@ -35,7 +36,7 @@ class MixMaterial;
 class Material
     : public TaggedPointer<  // Material Types
           CoatedDiffuseMaterial, CoatedConductorMaterial, ConductorMaterial,
-          DielectricMaterial, DiffuseMaterial, DiffuseTransmissionMaterial, HairMaterial,
+          DielectricMaterial, DiffuseMaterial, MetalRoughnessMaterial, DiffuseTransmissionMaterial, HairMaterial,
           MeasuredMaterial, SubsurfaceMaterial, ThinDielectricMaterial, MixMaterial
 
           > {

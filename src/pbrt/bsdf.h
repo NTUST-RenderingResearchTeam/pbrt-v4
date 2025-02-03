@@ -35,6 +35,16 @@ class BSDF {
     Vector3f LocalToRender(Vector3f v) const { return shadingFrame.FromLocal(v); }
 
     PBRT_CPU_GPU
+    SampledSpectrum GetDiffuse() const {
+        return bxdf.GetDiffuse();
+    }
+
+    PBRT_CPU_GPU
+    SampledSpectrum GetSpecular() const {
+        return bxdf.GetSpecular();
+    }
+
+    PBRT_CPU_GPU
     SampledSpectrum f(Vector3f woRender, Vector3f wiRender,
                       TransportMode mode = TransportMode::Radiance) const {
         Vector3f wi = RenderToLocal(wiRender), wo = RenderToLocal(woRender);

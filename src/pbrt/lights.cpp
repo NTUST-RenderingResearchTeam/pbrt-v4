@@ -709,11 +709,17 @@ DiffuseAreaLight::DiffuseAreaLight(const Transform &renderFromLight,
       alpha(type == LightType::Area ? alpha : nullptr),
       area(shape.Area()),
       twoSided(twoSided),
-      Lemit(LookupSpectrum(Le)),
+      //*Add disable wavelength
+      // Lemit(LookupSpectrum(Le)),
       scale(scale),
       image(im),
       imageColorSpace(imageColorSpace) {
     ++numAreaLights;
+
+    if(disableWavelength)
+        emissiveFactor = Le;
+    else
+        Lemit = LookupSpectrum(Le);
 
     if (image != nullptr) {
         ImageChannelDesc desc = image->GetChannelDesc({"R", "G", "B"});
@@ -775,13 +781,22 @@ SampledSpectrum DiffuseAreaLight::Phi(SampledWavelengths lambda) const {
                 RGB rgb;
                 for (int c = 0; c < 3; ++c)
                     rgb[c] = image->GetChannel({x, y}, c);
-                L += RGBIlluminantSpectrum(*imageColorSpace, ClampZero(rgb))
-                         .Sample(lambda);
+                if(disableWavelength)
+                    L += RGBConstantSpectrum(*imageColorSpace, ClampZero(rgb))
+                            .Sample(lambda);
+                else
+                    L += RGBIlluminantSpectrum(*imageColorSpace, ClampZero(rgb))
+                            .Sample(lambda);
             }
         L *= scale / (image->Resolution().x * image->Resolution().y);
 
-    } else
-        L = Lemit->Sample(lambda) * scale;
+    } else{
+        if(disableWavelength)
+            L = emissiveFactor.Sample(lambda);
+        else
+            L = Lemit->Sample(lambda) * scale;
+    }
+        
     return Pi * (twoSided ? 2 : 1) * area * L;
 }
 
@@ -797,10 +812,14 @@ pstd::optional<LightBounds> DiffuseAreaLight::Bounds() const {
                     phi += image->GetChannel({x, y}, c);
         phi /= 3 * image->Resolution().x * image->Resolution().y;
 
-    } else
-        phi = Lemit->MaxValue();
-    phi *= scale * area * Pi;
-
+    } else{
+        if(disableWavelength)
+            phi = emissiveFactor.MaxValue();
+        else
+            phi = Lemit->MaxValue();
+        phi *= scale * area * Pi;
+    }
+    
     DirectionCone nb = shape.NormalBounds();
     return LightBounds(shape.Bounds(), nb.w, phi, nb.cosTheta, std::cos(Pi / 2),
                        twoSided);
@@ -871,15 +890,26 @@ DiffuseAreaLight *DiffuseAreaLight::Create(const Transform &renderFromLight,
                                            const RGBColorSpace *colorSpace,
                                            const FileLoc *loc, Allocator alloc,
                                            const Shape shape, FloatTexture alphaTex) {
-    Spectrum L = parameters.GetOneSpectrum("L", nullptr, SpectrumType::Illuminant, alloc);
+    //*Add disable wavelength
+    bool disableWavelength = true;
+    Spectrum L;
+    if(disableWavelength)
+        L = parameters.GetOneSpectrum("L", nullptr, SpectrumType::Constant, alloc);
+    else
+        L = parameters.GetOneSpectrum("L", nullptr, SpectrumType::Illuminant, alloc);
+
+    
+    if (disableWavelength && !L)
+        L = alloc.new_object<RGBConstantSpectrum>(*RGBColorSpace::sRGB, RGB(0.0f, 0.0f, 0.0f));
+
     Float scale = parameters.GetOneFloat("scale", 1);
     bool twoSided = parameters.GetOneBool("twosided", false);
 
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
     const RGBColorSpace *imageColorSpace = nullptr;
     if (!filename.empty()) {
-        if (L)
-            ErrorExit(loc, "Both \"L\" and \"filename\" specified for DiffuseAreaLight.");
+        // if (L)
+        //     ErrorExit(loc, "Both \"L\" and \"filename\" specified for DiffuseAreaLight.");
 
         if (im->HasAnyInfinitePixels())
             ErrorExit(
@@ -906,7 +936,8 @@ DiffuseAreaLight *DiffuseAreaLight::Create(const Transform &renderFromLight,
         L = &colorSpace->illuminant;
 
     // scale so that radiance is equivalent to 1 nit
-    scale /= SpectrumToPhotometric(L ? L : &colorSpace->illuminant);
+    if(!disableWavelength)
+        scale /= SpectrumToPhotometric(L ? L : &colorSpace->illuminant);
 
     Float phi_v = parameters.GetOneFloat("power", -1.0f);
     if (phi_v > 0) {

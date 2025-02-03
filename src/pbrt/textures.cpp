@@ -371,6 +371,8 @@ SampledSpectrum SpectrumImageTexture::Evaluate(TextureEvalContext ctx,
             return RGBUnboundedSpectrum(*cs, rgb).Sample(lambda);
         else if (spectrumType == SpectrumType::Albedo)
             return RGBAlbedoSpectrum(*cs, Clamp(rgb, 0, 1)).Sample(lambda);
+        else if (spectrumType == SpectrumType::Constant)
+            return RGBConstantSpectrum(*cs, Clamp(rgb, 0, 1)).Sample(lambda);
         else
             return RGBIlluminantSpectrum(*cs, rgb).Sample(lambda);
     }

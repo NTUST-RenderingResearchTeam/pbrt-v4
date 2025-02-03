@@ -240,11 +240,21 @@ Float SampledSpectrum::ToLuminance(const SampledWavelengths &lambda) const {
     return rgb.r * 0.299f + rgb.g * 0.587f + rgb.b * 0.114f;
 }
 
+Float SampledSpectrum::ToLuminanceDisableWavelength() const {
+    return values[0] * 0.299f + values[1] * 0.587f + values[2] * 0.114f;
+}
+
 Float SampledSpectrum::ToLuminanceV2(const SampledWavelengths &lambda) const {
     XYZ xyz = ToXYZ(lambda);
     RGB rgb = RGBColorSpace::sRGB->ToRGB(xyz);
     rgb = ClampZero(rgb);
     return rgb.r + rgb.g + rgb.b;
+}
+
+RGBConstantSpectrum::RGBConstantSpectrum(const RGBColorSpace &cs, RGB rgb) {
+    DCHECK_LE(std::max({rgb.r, rgb.g, rgb.b}), 1);
+    DCHECK_GE(std::min({rgb.r, rgb.g, rgb.b}), 0);
+    this->rgb = rgb;
 }
 
 RGBAlbedoSpectrum::RGBAlbedoSpectrum(const RGBColorSpace &cs, RGB rgb) {
@@ -264,6 +274,10 @@ RGBIlluminantSpectrum::RGBIlluminantSpectrum(const RGBColorSpace &cs, RGB rgb)
     Float m = std::max({rgb.r, rgb.g, rgb.b});
     scale = 2 * m;
     rsp = cs.ToRGBCoeffs(scale ? rgb / scale : RGB(0, 0, 0));
+}
+
+std::string RGBConstantSpectrum::ToString() const {
+    return StringPrintf("[ RGBConstantSpectrum rgb: %s ]", rgb);
 }
 
 std::string RGBAlbedoSpectrum::ToString() const {

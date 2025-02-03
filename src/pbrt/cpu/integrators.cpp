@@ -486,6 +486,7 @@ void WavefrontIntegrator::GetBSDF(RayBounceBuffer &rbBuffer, RayStageBuffer &rsB
     if(!rbBuffer.ray)
         return;
     // Get BSDF and skip over medium boundaries
+    // TODO:: get simpify bsdf
     rsBuffer.bsdf = rsBuffer.isect->intr.GetBSDF(rbBuffer.ray.value(), rbBuffer.lambda, camera, scratchBuffer, sampler);
     if (!rsBuffer.bsdf) {
         rbBuffer.specularBounce = true;  // disable MIS if the indirect ray hits a light
@@ -548,7 +549,10 @@ void WavefrontIntegrator::Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsB
         return;
     // Evaluate BSDF for light sample and check light visibility
     Vector3f wo = rsBuffer.isect->intr.wo, wi = rsBuffer.ls->wi;
-    SampledSpectrum f = rsBuffer.bsdf->f(wo, wi) * AbsDot(wi, rsBuffer.isect->intr.shading.n);
+    // TODO:: use lambert for 
+    SampledSpectrum f = rsBuffer.bsdf->f(wo, wi);
+    if(!IsMetalRoughness(rsBuffer.bsdf->Flags()))
+        f *= AbsDot(wi, rsBuffer.isect->intr.shading.n);
     if (!f || !Unoccluded(rsBuffer.isect->intr, rsBuffer.ls->pLight))
         return;
 
@@ -586,7 +590,9 @@ void WavefrontIntegrator::SpawnBrdfRays(RayBounceBuffer &rbBuffer, RayStageBuffe
     if (!bs)
         return;
     // Update path state variables after surface scattering
-    rbBuffer.beta *= bs->f * AbsDot(bs->wi, rsBuffer.isect->intr.shading.n) / bs->pdf;
+    rbBuffer.beta *= bs->f / bs->pdf;
+    if(!IsMetalRoughness(rsBuffer.bsdf->Flags()))
+        rbBuffer.beta *= AbsDot(bs->wi, rsBuffer.isect->intr.shading.n);
     rbBuffer.p_b = bs->pdfIsProportional ? rsBuffer.bsdf->PDF(wo, bs->wi) : bs->pdf;
     rbBuffer.specularBounce = bs->IsSpecular();
     rbBuffer.anyNonSpecularBounces |= !bs->IsSpecular();
@@ -1181,7 +1187,9 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     // Evaluate BSDF for light sample and check light visibility
     Vector3f wo = dstRs.isect->intr.wo, wi = ls->wi;
     pstd::optional<BSDF> bsdf = dstRs.bsdf;
-    SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, dstRs.isect->intr.shading.n);
+    SampledSpectrum f = bsdf->f(wo, wi);
+    if(!IsMetalRoughness(bsdf->Flags()))
+        f *= AbsDot(wi, dstRs.isect->intr.shading.n);
     if(!f){
         if(!restirSetting.unbiased)
             dstReservoir.M += prevReservoir.M;
@@ -1202,7 +1210,8 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     // RIS f(x)
     SampledSpectrum w_ld = ClampZero(ls->L) * f;
 
-    target_p += w_ld.ToLuminance(dstRb.lambda);
+    // target_p += w_ld.ToLuminance(dstRb.lambda);
+    target_p += w_ld.ToLuminanceDisableWavelength();
 
     if(combineReservoir(dstReservoir, prevReservoir, target_p, sampler))
     {
@@ -1357,7 +1366,9 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
         // Evaluate BSDF for light sample and check light visibility
         Vector3f wo = centerRs.isect->intr.wo, wi = ls->wi;
         pstd::optional<BSDF> bsdf = centerRs.bsdf;
-        SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, centerRs.isect->intr.shading.n);
+        SampledSpectrum f = bsdf->f(wo, wi);
+        if(!IsMetalRoughness(bsdf->Flags()))
+            f *= AbsDot(wi, centerRs.isect->intr.shading.n);
         if(!f){
             if(!restirSetting.unbiased)
                 dstReservoir.M += spatialReservoir.M;
@@ -1377,7 +1388,8 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
         // RIS f(x)
         SampledSpectrum w_ld = ClampZero(ls->L) * f;
 
-        target_p += w_ld.ToLuminance(centerRb.lambda);
+        // target_p += w_ld.ToLuminance(centerRb.lambda);
+        target_p += w_ld.ToLuminanceDisableWavelength();
 
         if(combineReservoir(dstReservoir, spatialReservoir, target_p, sampler))
         {
@@ -1531,7 +1543,9 @@ void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservo
         // Evaluate BSDF for light sample and check light visibility
         Vector3f wo = dstRs.isect->intr.wo, wi = ls->wi;
         pstd::optional<BSDF> bsdf = dstRs.bsdf;
-        SampledSpectrum f = bsdf->f(wo, wi) * AbsDot(wi, dstRs.isect->intr.shading.n);
+        SampledSpectrum f = bsdf->f(wo, wi);
+        if(!IsMetalRoughness(bsdf->Flags()))
+            f *= AbsDot(wi, dstRs.isect->intr.shading.n);
         if(!f){
             dstReservoir.M += spatialReservoir.M;
             continue;
@@ -1647,7 +1661,9 @@ void ReSTIRIntegrator::SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &r
 
          // Evaluate BSDF for light sample and check light visibility
         Vector3f wo = rsBuffer.isect->intr.wo, wi = ls->wi;
-        SampledSpectrum f = rsBuffer.bsdf->f(wo, wi) * AbsDot(wi, rsBuffer.isect->intr.shading.n);
+        SampledSpectrum f = rsBuffer.bsdf->f(wo, wi);
+        if(!IsMetalRoughness(rsBuffer.bsdf->Flags()))
+            f *= AbsDot(wi, rsBuffer.isect->intr.shading.n);
         if(!f){    
             localLight.M++;
             continue;
@@ -1662,7 +1678,8 @@ void ReSTIRIntegrator::SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &r
         // RIS f(x)
         SampledSpectrum w_ld = ClampZero(ls->L) * f;
 
-        target_p += w_ld.ToLuminance(rbBuffer.lambda);
+        // target_p += w_ld.ToLuminance(rbBuffer.lambda);
+        target_p += w_ld.ToLuminanceDisableWavelength();
 
         if(streamReservoir(localLight, target_p, source_p, sampler))
         {
@@ -1707,13 +1724,19 @@ void ReSTIRIntegrator::Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuff
     //     return;
     
     Vector3f wo = rsBuffer.isect->intr.wo, wi = reservoir.ls->wi;
-    SampledSpectrum f = rsBuffer.bsdf->f(wo, wi) * AbsDot(wi, rsBuffer.isect->intr.shading.n);
+    SampledSpectrum f = rsBuffer.bsdf->f(wo, wi);
+    if(!IsMetalRoughness(rsBuffer.bsdf->Flags()))
+        f *= AbsDot(wi, rsBuffer.isect->intr.shading.n);
     // Evaluate BSDF for light sample and check light visibility
     if (!f)
         return;
         
     // Return light's contribution to reflected radiance
     rbBuffer.L += rbBuffer.beta * ClampZero(reservoir.ls->L) * f * reservoir.W;
+    // rbBuffer.L += SampledSpectrum(1.0f);
+    // rbBuffer.L[0] += rsBuffer.isect->intr.shading.n.x;
+    // rbBuffer.L[1] += rsBuffer.isect->intr.shading.n.y;
+    // rbBuffer.L[2] += rsBuffer.isect->intr.shading.n.z;
 
     // Float p_l = reservoir.targetPdf / (reservoir.weightSum / reservoir.M);
 
@@ -1822,7 +1845,7 @@ void ReSTIRIntegrator::Render() {
     prevFirstDIReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
 
     // Render image in waves
-    while (currentTime <= 1.0f) {
+    while (currentTime < 1.0f) {
         // Render current wave's image tiles in parallel
         // TODO:: maybe use ParallelFor1D to properly skip pixel that finished soon.
         threadSampleIndex = currentSampleIndex;
@@ -1891,6 +1914,7 @@ void ReSTIRIntegrator::Render() {
                     StatsReportPixelEnd(pPixel);
                 }
             });
+            
             if(allFinished)
                 break;
 
@@ -2043,7 +2067,6 @@ void ReSTIRIntegrator::Render() {
             allFinished = true;
             ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
                 Sampler &sampler = samplers.Get();
-                ScratchBuffer &scratchBuffer = currentSampleCount % 2 ? scratchBuffers.Get() : prevScratchBuffers.Get();
                 for (Point2i pPixel : tileBounds) {
                     StatsReportPixelStart(pPixel);
                     threadPixel = pPixel;
@@ -2069,11 +2092,6 @@ void ReSTIRIntegrator::Render() {
 
         }
 
-        if(currentSampleCount % 2)
-            scratchBuffers.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
-        else
-            prevScratchBuffers.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
-
         stageIndex = 9;
         ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
             for (Point2i pPixel : tileBounds) {
@@ -2081,6 +2099,7 @@ void ReSTIRIntegrator::Render() {
                 threadPixel = pPixel;
 
                 RayBounceBuffer &buffer = rayBounceBuffers[pPixel];
+                RayStageBuffer &rsBuffer = (currentSampleCount % 2 ? firstDIRayStageBuffers : prevFirstDIRayStageBuffers)[pPixel];
                 SampledSpectrum L = buffer.weight * buffer.L;
 
                 // Issue warning if unexpected radiance value is returned
@@ -2097,6 +2116,25 @@ void ReSTIRIntegrator::Render() {
                 }
 
                 VisibleSurface visibleSurface;
+                
+                if(rsBuffer.isect){
+                    visibleSurface.p = rsBuffer.isect->intr.p();
+                    Vector3f wo = rsBuffer.isect->intr.wo;
+                    visibleSurface.n = FaceForward(rsBuffer.isect->intr.n, wo);
+                    visibleSurface.ns = FaceForward(rsBuffer.isect->intr.shading.n, wo);
+                    visibleSurface.uv = rsBuffer.isect->intr.uv;
+                    visibleSurface.time = rsBuffer.isect->intr.time;
+                    visibleSurface.dpdx = rsBuffer.isect->intr.dpdx;
+                    visibleSurface.dpdy = rsBuffer.isect->intr.dpdy;
+                    visibleSurface.set = true;
+                }
+                if(rsBuffer.bsdf){
+                    visibleSurface.albedo = rsBuffer.bsdf->GetDiffuse();
+                    visibleSurface.specular = rsBuffer.bsdf->GetSpecular();
+                    visibleSurface.set = true;
+                }
+                    
+                
                 camera.GetFilm().AddSample(pPixel, L, buffer.lambda, &visibleSurface,
                                 buffer.filterWeight);
                 
@@ -2104,6 +2142,8 @@ void ReSTIRIntegrator::Render() {
             }
         });
         
+        ThreadLocal<ScratchBuffer> &scratchBuffer = currentSampleCount % 2 ? scratchBuffers : prevScratchBuffers;
+        scratchBuffer.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
         
         // Update start and end wave
         progress.Update(1);

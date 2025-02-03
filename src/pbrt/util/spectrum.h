@@ -19,6 +19,7 @@
 #include <pbrt/util/pstd.h>
 #include <pbrt/util/sampling.h>
 #include <pbrt/util/taggedptr.h>
+#include <pbrt/util/error.h>
 
 #include <algorithm>
 #include <cmath>
@@ -42,12 +43,13 @@ class BlackbodySpectrum;
 class ConstantSpectrum;
 class PiecewiseLinearSpectrum;
 class DenselySampledSpectrum;
+class RGBConstantSpectrum;
 class RGBAlbedoSpectrum;
 class RGBUnboundedSpectrum;
 class RGBIlluminantSpectrum;
 
 class Spectrum : public TaggedPointer<ConstantSpectrum, DenselySampledSpectrum,
-                                      PiecewiseLinearSpectrum, RGBAlbedoSpectrum,
+                                      PiecewiseLinearSpectrum, RGBConstantSpectrum, RGBAlbedoSpectrum,
                                       RGBUnboundedSpectrum, RGBIlluminantSpectrum,
                                       BlackbodySpectrum> {
   public:
@@ -205,6 +207,8 @@ class SampledSpectrum {
     // *Add
     // calculate Luminance with RGB grayscle
     Float ToLuminance(const SampledWavelengths &lambda) const;
+    // calculate Luminance with RGB grayscle(Without wavelength convert)
+    Float ToLuminanceDisableWavelength() const;
     Float ToLuminanceV2(const SampledWavelengths &lambda) const;
 
     SampledSpectrum() = default;
@@ -533,6 +537,34 @@ class BlackbodySpectrum {
     Float normalizationFactor;
 };
 
+//* Add constant spectrum for non-spectrum rendering
+class RGBConstantSpectrum {
+  public:
+    // RGBConstantSpectrum Public Methods
+    PBRT_CPU_GPU
+    Float operator()(Float lambda) const { ErrorExit("RGBConstantSpectrum don't support operator()!"); return 0.0f; }
+    PBRT_CPU_GPU
+    Float MaxValue() const { return rgb[0] > rgb[1] ? (rgb[0] > rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] > rgb[2] ? rgb[1] : rgb[2]); }
+
+    PBRT_CPU_GPU
+    RGBConstantSpectrum(const RGBColorSpace &cs, RGB rgb);
+
+    PBRT_CPU_GPU
+    SampledSpectrum Sample(const SampledWavelengths &lambda) const {
+        SampledSpectrum s;
+        for (int i = 0; i < 3; ++i)
+            s[i] = rgb[i];
+        s[3] = 0;
+        return s;
+    }
+
+    std::string ToString() const;
+
+  private:
+    // RGBConstantSpectrum Private Members
+    RGB rgb;
+};
+
 class RGBAlbedoSpectrum {
   public:
     // RGBAlbedoSpectrum Public Methods
@@ -712,7 +744,7 @@ inline SampledSpectrum Bilerp(pstd::array<Float, 2> p,
 PBRT_CPU_GPU
 inline SampledSpectrum Lerp(Float t, const SampledSpectrum &s1,
                             const SampledSpectrum &s2) {
-    return (1 - t) * s1 + t * s2;
+    return (1.0f - t) * s1 + t * s2;
 }
 
 // Spectral Data Declarations

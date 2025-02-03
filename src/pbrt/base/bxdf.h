@@ -52,6 +52,8 @@ enum BxDFFlags {
     Diffuse = 1 << 2,
     Glossy = 1 << 3,
     Specular = 1 << 4,
+    // *Add rtx-di's gltf material flag
+    MetalRoughness = 1 << 5,
     // Composite _BxDFFlags_ definitions
     DiffuseReflection = Diffuse | Reflection,
     DiffuseTransmission = Diffuse | Transmission,
@@ -103,6 +105,9 @@ PBRT_CPU_GPU inline bool IsSpecular(BxDFFlags f) {
 PBRT_CPU_GPU inline bool IsNonSpecular(BxDFFlags f) {
     return f & (BxDFFlags::Diffuse | BxDFFlags::Glossy);
 }
+PBRT_CPU_GPU inline bool IsMetalRoughness(BxDFFlags f) {
+    return f & BxDFFlags::MetalRoughness;
+}
 
 std::string ToString(BxDFFlags flags);
 
@@ -152,6 +157,7 @@ struct BSDFSample {
 };
 
 class DiffuseBxDF;
+class MetalRoughnessBxDF;
 class DiffuseTransmissionBxDF;
 class DielectricBxDF;
 class ThinDielectricBxDF;
@@ -164,7 +170,7 @@ class CoatedConductorBxDF;
 
 // BxDF Definition
 class BxDF
-    : public TaggedPointer<DiffuseTransmissionBxDF, DiffuseBxDF, CoatedDiffuseBxDF,
+    : public TaggedPointer<DiffuseTransmissionBxDF, DiffuseBxDF, MetalRoughnessBxDF, CoatedDiffuseBxDF,
                            CoatedConductorBxDF, DielectricBxDF, ThinDielectricBxDF,
                            HairBxDF, MeasuredBxDF, ConductorBxDF, NormalizedFresnelBxDF> {
   public:
@@ -175,6 +181,8 @@ class BxDF
 
     std::string ToString() const;
 
+    PBRT_CPU_GPU inline SampledSpectrum GetDiffuse() const;
+    PBRT_CPU_GPU inline SampledSpectrum GetSpecular() const;
     PBRT_CPU_GPU inline SampledSpectrum f(Vector3f wo, Vector3f wi,
                                           TransportMode mode) const;
 

@@ -926,8 +926,9 @@ void BasicScene::startLoadingEmissiveMaps(const ParameterDictionary &parameters)
 
     auto create = [=](std::string filename) {
         Allocator alloc = threadAllocators.Get();
+        //*ColorEncoding linear or sRGB?
         ImageAndMetadata immeta =
-            Image::Read(filename, Allocator(), ColorEncoding::Linear);
+            Image::Read(filename, Allocator(), ColorEncoding::sRGB);
         Image &image = immeta.image;
         ImageChannelDesc rgbDesc = image.GetChannelDesc({"R", "G", "B"});
         if (!rgbDesc)
@@ -1024,9 +1025,14 @@ void BasicScene::AddSpectrumTexture(std::string name, TextureSceneEntity texture
         TextureParameterDictionary texDict(&texture.parameters, nullptr);
         // Only create SpectrumType::Albedo for now; will get the other two
         // types in CreateTextures().
-        return SpectrumTexture::Create(texture.name, renderFromTexture, texDict,
-                                       SpectrumType::Albedo, &texture.loc, alloc,
+        if(disableWavelengthRendering)
+            return SpectrumTexture::Create(texture.name, renderFromTexture, texDict,
+                                       SpectrumType::Constant, &texture.loc, alloc,
                                        Options->useGPU);
+        else
+            return SpectrumTexture::Create(texture.name, renderFromTexture, texDict,
+                                        SpectrumType::Albedo, &texture.loc, alloc,
+                                        Options->useGPU);
     };
     spectrumTextureJobs[name] = RunAsync(create, texture);
 }
@@ -1219,8 +1225,14 @@ NamedTextures BasicScene::CreateTextures() {
     for (auto &tex : floatTextureJobs)
         textures.floatTextures[tex.first] = tex.second->GetResult();
     floatTextureJobs.clear();
-    for (auto &tex : spectrumTextureJobs)
-        textures.albedoSpectrumTextures[tex.first] = tex.second->GetResult();
+
+    if(disableWavelengthRendering)
+        for (auto &tex : spectrumTextureJobs)
+            textures.constantSpectrumTextures[tex.first] = tex.second->GetResult();
+    else
+        for (auto &tex : spectrumTextureJobs)
+            textures.albedoSpectrumTextures[tex.first] = tex.second->GetResult();
+    
     spectrumTextureJobs.clear();
     textureMutex.unlock();
     LOG_VERBOSE("Finished consuming texture futures");
@@ -1272,12 +1284,16 @@ NamedTextures BasicScene::CreateTextures() {
         SpectrumTexture unboundedTex = SpectrumTexture::Create(
             tex.second.name, renderFromTexture, texDict, SpectrumType::Unbounded,
             &tex.second.loc, alloc, Options->useGPU);
+        SpectrumTexture contTex = SpectrumTexture::Create(
+            tex.second.name, renderFromTexture, texDict, SpectrumType::Constant,
+            &tex.second.loc, alloc, Options->useGPU);
         SpectrumTexture illumTex = SpectrumTexture::Create(
             tex.second.name, renderFromTexture, texDict, SpectrumType::Illuminant,
             &tex.second.loc, alloc, Options->useGPU);
 
         textures.albedoSpectrumTextures[tex.first] = albedoTex;
         textures.unboundedSpectrumTextures[tex.first] = unboundedTex;
+        textures.constantSpectrumTextures[tex.first] = contTex;
         textures.illuminantSpectrumTextures[tex.first] = illumTex;
     }
 

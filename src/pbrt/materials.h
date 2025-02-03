@@ -550,6 +550,75 @@ class ConductorMaterial {
     bool remapRoughness;
 };
 
+// TODO:: easy shading material
+// MetalRoughnessMaterial define
+// material use by rtx-di, can only use in restir integrator currently
+class MetalRoughnessMaterial {
+  public:
+    using BxDF = MetalRoughnessBxDF;
+    using BSSRDF = void;
+    // MetalRoughnessMaterial Public Methods
+    MetalRoughnessMaterial(SpectrumTexture diffuseTex, SpectrumTexture specularTex, FloatTexture glossTex,
+                          Spectrum diffuse, Spectrum specular,
+                          Spectrum roughness, Spectrum metallic, Spectrum eta,
+                          FloatTexture displacement, Image *normalMap,
+                          bool useSpecularGlossModel, int maxDepth, int nSamples)
+        : displacement(displacement),
+          normalMap(normalMap),
+          diffuseTex(diffuseTex),
+          specularTex(specularTex),
+          diffuse(diffuse),
+          specular(specular),
+          roughness(roughness),
+          metallic(metallic),
+          eta(eta),
+          useSpecularGlossModel(useSpecularGlossModel),
+          maxDepth(maxDepth),
+          nSamples(nSamples) {}
+
+    static const char *Name() { return "MetalRoughnessMaterial"; }
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU bool CanEvaluateTextures(TextureEvaluator texEval) const {
+        return texEval.CanEvaluate({}, {diffuseTex, specularTex});
+    }
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU MetalRoughnessBxDF GetBxDF(TextureEvaluator texEval,
+                                           const MaterialEvalContext &ctx,
+                                           SampledWavelengths &lambda) const;
+
+    PBRT_CPU_GPU
+    FloatTexture GetDisplacement() const { return displacement; }
+    PBRT_CPU_GPU
+    const Image *GetNormalMap() const { return normalMap; }
+
+    static MetalRoughnessMaterial *Create(const TextureParameterDictionary &parameters,
+                                         Image *normalMap, const FileLoc *loc,
+                                         Allocator alloc);
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU void GetBSSRDF(TextureEvaluator texEval, const MaterialEvalContext &ctx,
+                                SampledWavelengths &lambda) const {}
+
+    PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
+
+    std::string ToString() const;
+
+  private:
+    // MetalRoughnessMaterial Private Members
+    FloatTexture displacement;
+    Image *normalMap;
+    SpectrumTexture diffuseTex, specularTex;
+    FloatTexture glossTex;
+    Spectrum diffuse, specular;     //3F
+    Spectrum roughness, metallic;   //1F
+    Spectrum eta;                   //1F
+    bool isSpecularGlossness;
+    bool useSpecularGlossModel = true;
+    int maxDepth, nSamples;
+};
+
 // CoatedDiffuseMaterial Definition
 class CoatedDiffuseMaterial {
   public:
@@ -892,6 +961,7 @@ class MeasuredMaterial {
 };
 
 // Material Inline Method Definitions
+// TODO:: get simpify bsdf
 template <typename TextureEvaluator>
 inline BSDF Material::GetBSDF(TextureEvaluator texEval, MaterialEvalContext ctx,
                               SampledWavelengths &lambda,

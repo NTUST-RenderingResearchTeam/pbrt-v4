@@ -401,6 +401,8 @@ std::vector<Spectrum> ParameterDictionary::extractSpectrumArray(
                     return alloc.new_object<RGBAlbedoSpectrum>(cs, rgb);
                 } else if (spectrumType == SpectrumType::Unbounded) {
                     return alloc.new_object<RGBUnboundedSpectrum>(cs, rgb);
+                } else if (spectrumType == SpectrumType::Constant) {
+                    return alloc.new_object<RGBConstantSpectrum>(cs, rgb);
                 } else {
                     CHECK(spectrumType == SpectrumType::Illuminant);
                     return alloc.new_object<RGBIlluminantSpectrum>(cs, rgb);
@@ -820,7 +822,9 @@ SpectrumTexture TextureParameterDictionary::GetSpectrumTextureOrNull(
                                        ? textures->unboundedSpectrumTextures
                                        : ((spectrumType == SpectrumType::Albedo)
                                               ? textures->albedoSpectrumTextures
-                                              : textures->illuminantSpectrumTextures);
+                                              : ((spectrumType == SpectrumType::Constant)
+                                                    ? textures->constantSpectrumTextures
+                                                    : textures->illuminantSpectrumTextures));
 
     for (const ParsedParameter *p : dict->params) {
         if (p->name != name)
@@ -859,6 +863,8 @@ SpectrumTexture TextureParameterDictionary::GetSpectrumTextureOrNull(
                 s = alloc.new_object<RGBIlluminantSpectrum>(*dict->ColorSpace(), rgb);
             else if (spectrumType == SpectrumType::Unbounded)
                 s = alloc.new_object<RGBUnboundedSpectrum>(*dict->ColorSpace(), rgb);
+            else if (spectrumType == SpectrumType::Constant)
+                s = alloc.new_object<RGBConstantSpectrum>(*dict->ColorSpace(), rgb);
             else {
                 CHECK(spectrumType == SpectrumType::Albedo);
                 if (rgb.r > 1 || rgb.g > 1 || rgb.b > 1)

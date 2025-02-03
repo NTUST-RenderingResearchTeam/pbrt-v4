@@ -870,7 +870,15 @@ GBufferFilm *GBufferFilm::Create(const ParameterDictionary &parameters,
 void RestirGBufferFilm::AddSample(Point2i pFilm, SampledSpectrum L,
                             const SampledWavelengths &lambda,
                             const VisibleSurface *visibleSurface, Float weight) {
-    RGB rgb = sensor->ToSensorRGB(L, lambda);
+    RGB rgb;
+
+    if(disableWavelength)
+        rgb = RGB(L[0], L[1], L[2]);
+    else
+        rgb = sensor->ToSensorRGB(L, lambda);
+
+    // RGB albedoRGB = sensor->ToSensorRGB(visibleSurface->albedo, lambda);
+    // RGB specularRGB = sensor->ToSensorRGB(visibleSurface->specular, lambda);
     Float m = std::max({rgb.r, rgb.g, rgb.b});
     if (m > maxComponentValue)
         rgb *= maxComponentValue / m;
@@ -910,11 +918,20 @@ void RestirGBufferFilm::AddSample(Point2i pFilm, SampledSpectrum L,
         }
         p.uvSum += weight * visibleSurface->uv;
 
-        SampledSpectrum albedo =
-            visibleSurface->albedo * colorSpace->illuminant.Sample(lambda);
-        RGB albedoRGB = albedo.ToRGB(lambda, *colorSpace);
-        for (int c = 0; c < 3; ++c)
+        // SampledSpectrum albedo =
+        //     visibleSurface->albedo * colorSpace->illuminant.Sample(lambda);
+        // RGB albedoRGB = visibleSurface->albedo.ToRGB(lambda, *colorSpace);
+        // SampledSpectrum specular =
+        //     visibleSurface->specular * colorSpace->illuminant.Sample(lambda);
+        // RGB specularRGB = visibleSurface->specular.ToRGB(lambda, *colorSpace);
+        RGB albedoRGB(visibleSurface->albedo[0], visibleSurface->albedo[1], visibleSurface->albedo[2]);
+        RGB specularRGB(visibleSurface->specular[0], visibleSurface->specular[1], visibleSurface->specular[2]);
+        double rough = visibleSurface->specular[3];
+        p.roughSum += weight * rough;
+        for (int c = 0; c < 3; ++c){
             p.rgbAlbedoSum[c] += weight * albedoRGB[c];
+            p.rgbSpecularSum[c] += weight * specularRGB[c];
+        }
     }
 
     for (int c = 0; c < 3; ++c)
@@ -984,6 +1001,10 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
                  "Albedo.R",
                  "Albedo.G",
                  "Albedo.B",
+                 "Specular.R",
+                 "Specular.G",
+                 "Specular.B",
+                 "rough",
                  "P.X",
                  "P.Y",
                  "P.Z",
@@ -1010,8 +1031,11 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
     ImageChannelDesc nDesc = image.GetChannelDesc({"N.X", "N.Y", "N.Z"});
     ImageChannelDesc nsDesc = image.GetChannelDesc({"Ns.X", "Ns.Y", "Ns.Z"});
     ImageChannelDesc uvDesc = image.GetChannelDesc({"u", "v"});
+    ImageChannelDesc roughDesc = image.GetChannelDesc({"rough"});
     ImageChannelDesc albedoRgbDesc =
         image.GetChannelDesc({"Albedo.R", "Albedo.G", "Albedo.B"});
+    ImageChannelDesc specularRgbDesc =
+        image.GetChannelDesc({"Specular.R", "Specular.G", "Specular.B"});
     ImageChannelDesc varianceDesc =
         image.GetChannelDesc({"Variance.R", "Variance.G", "Variance.B"});
     ImageChannelDesc relVarianceDesc = image.GetChannelDesc(
@@ -1023,6 +1047,9 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
         RGB rgb(pixel.rgbSum[0], pixel.rgbSum[1], pixel.rgbSum[2]);
         RGB albedoRgb(pixel.rgbAlbedoSum[0], pixel.rgbAlbedoSum[1],
                       pixel.rgbAlbedoSum[2]);
+        RGB specularRgb(pixel.rgbSpecularSum[0], pixel.rgbSpecularSum[1],
+                      pixel.rgbSpecularSum[2]);
+        Float rough = pixel.roughSum;
 
         // Normalize pixel with weight sum
         Float weightSum = pixel.weightSum, gBufferWeightSum = pixel.gBufferWeightSum;
@@ -1032,6 +1059,8 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
         if (weightSum != 0) {
             rgb /= weightSum;
             albedoRgb /= weightSum;
+            specularRgb /= weightSum;
+            rough /= weightSum;
         }
         if (gBufferWeightSum != 0) {
             pt /= gBufferWeightSum;
@@ -1041,10 +1070,15 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
         }
 
         // Add splat value at pixel
-        for (int c = 0; c < 3; ++c)
-            rgb[c] += splatScale * pixel.rgbSplat[c] / filterIntegral;
+        // for (int c = 0; c < 3; ++c)
+        //     rgb[c] += splatScale * pixel.rgbSplat[c] / filterIntegral;
 
-        rgb = outputRGBFromSensorRGB * rgb;
+        if(!disableWavelength)
+            rgb = outputRGBFromSensorRGB * rgb;
+        // albedoRgb = outputRGBFromSensorRGB * albedoRgb;
+        // specularRgb = outputRGBFromSensorRGB * specularRgb;
+        albedoRgb = albedoRgb;
+        specularRgb = specularRgb;
 
         if (writeFP16 && std::max({rgb.r, rgb.g, rgb.b}) > 65504) {
             if (rgb.r > 65504)
@@ -1060,6 +1094,9 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
         image.SetChannels(pOffset, rgbDesc, {rgb[0], rgb[1], rgb[2]});
         image.SetChannels(pOffset, albedoRgbDesc,
                           {albedoRgb[0], albedoRgb[1], albedoRgb[2]});
+        image.SetChannels(pOffset, specularRgbDesc,
+                          {specularRgb[0], specularRgb[1], specularRgb[2]});
+        image.SetChannels(pOffset, roughDesc, {rough});
 
         Normal3f n =
             LengthSquared(pixel.nSum) > 0 ? Normalize(pixel.nSum) : Normal3f(0, 0, 0);

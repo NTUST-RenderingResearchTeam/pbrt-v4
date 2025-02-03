@@ -454,11 +454,23 @@ class DiffuseAreaLight : public LightBase {
             uv[1] = 1 - uv[1];
             for (int c = 0; c < 3; ++c)
                 rgb[c] = image->BilerpChannel(uv, c);
-            RGBIlluminantSpectrum spec(*imageColorSpace, ClampZero(rgb));
-            return scale * spec.Sample(lambda);
+            // *Add Disablewavelength
+            if(disableWavelength){
+                RGBConstantSpectrum spec(*imageColorSpace, ClampZero(rgb));
+                return emissiveFactor.Sample(lambda) * spec.Sample(lambda);
+            }
+            else{
+                RGBIlluminantSpectrum spec(*imageColorSpace, ClampZero(rgb));
+                return scale * spec.Sample(lambda);
+            }
+            
 
-        } else
-            return scale * Lemit->Sample(lambda);
+        } else{
+            if(disableWavelength)
+                return emissiveFactor.Sample(lambda);
+            else
+                return scale * Lemit->Sample(lambda);
+        }
     }
 
     PBRT_CPU_GPU
@@ -476,9 +488,14 @@ class DiffuseAreaLight : public LightBase {
     Float area;
     bool twoSided;
     const DenselySampledSpectrum *Lemit;
+    //*Add RTX-DI material
+    Spectrum emissiveFactor;
+
     Float scale;
     Image *image;
     const RGBColorSpace *imageColorSpace;
+    //*Add
+    bool disableWavelength = true;
 
     // DiffuseAreaLight Private Methods
     PBRT_CPU_GPU

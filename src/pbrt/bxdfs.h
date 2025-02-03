@@ -34,6 +34,12 @@ class DiffuseBxDF {
     PBRT_CPU_GPU
     DiffuseBxDF(SampledSpectrum R) : R(R) {}
 
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return R;
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const { return {}; }
+
     PBRT_CPU_GPU
     SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
         if (!SameHemisphere(wo, wi))
@@ -81,6 +87,81 @@ class DiffuseBxDF {
     SampledSpectrum R;
 };
 
+// TODO:: MetalRoughnessBxDF
+
+
+// MetalRoughnessBxDF Definition
+class MetalRoughnessBxDF {
+  public:
+    // MetalRoughnessBxDF Public Methods
+    MetalRoughnessBxDF() = default;
+    PBRT_CPU_GPU
+    MetalRoughnessBxDF(SampledSpectrum diffuseAlbedo, SampledSpectrum specularF0, Float roughness)
+     : diffuseAlbedo(diffuseAlbedo), specularF0(specularF0), roughness(roughness) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return diffuseAlbedo;
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{
+        SampledSpectrum spec = specularF0;
+        spec[3] = roughness;
+        return spec;
+    }
+    // TODO:: this is from rtx-di, should use Falcor solution
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const;
+
+    // TODO:: not impenment yet, should use Falcor solution
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+            return {};
+        // Sample cosine-weighted hemisphere to compute _wi_ and _pdf_
+        Vector3f wi = SampleCosineHemisphere(u);
+        if (wo.z < 0)
+            wi.z *= -1;
+        Float pdf = CosineHemispherePDF(AbsCosTheta(wi));
+
+        return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseReflection);
+    }
+
+    // TODO:: not impenment yet, should use Falcor solution
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection) || !SameHemisphere(wo, wi))
+            return 0;
+        return CosineHemispherePDF(AbsCosTheta(wi));
+    }
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "MetalRoughnessBxDF"; }
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        BxDFFlags Flags = BxDFFlags::Reflection | BxDFFlags::MetalRoughness;
+        Flags = Flags | BxDFFlags::Diffuse;
+        Flags = Flags | BxDFFlags::Specular;
+        // if(diffuseAlbedo)
+        //     Flags = Flags | BxDFFlags::Diffuse;
+        // if(specularF0)
+        //     Flags = Flags | BxDFFlags::Specular;
+        return Flags;
+    }
+
+  private:
+    SampledSpectrum diffuseAlbedo, specularF0;
+    Float roughness;
+};
+
 // DiffuseTransmissionBxDF Definition
 class DiffuseTransmissionBxDF {
   public:
@@ -89,6 +170,11 @@ class DiffuseTransmissionBxDF {
     PBRT_CPU_GPU
     DiffuseTransmissionBxDF(SampledSpectrum R, SampledSpectrum T) : R(R), T(T) {}
 
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return R;
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const { return {}; }
     PBRT_CPU_GPU
     SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
         return SameHemisphere(wo, wi) ? (R * InvPi) : (T * InvPi);
@@ -172,6 +258,10 @@ class DielectricBxDF {
     DielectricBxDF(Float eta, TrowbridgeReitzDistribution mfDistrib)
         : eta(eta), mfDistrib(mfDistrib) {}
 
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const { return {};}
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{ return {};}
+
     PBRT_CPU_GPU
     BxDFFlags Flags() const {
         BxDFFlags flags = (eta == 1) ? BxDFFlags::Transmission
@@ -212,6 +302,10 @@ class ThinDielectricBxDF {
     ThinDielectricBxDF() = default;
     PBRT_CPU_GPU
     ThinDielectricBxDF(Float eta) : eta(eta) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {return {};}
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{return {};}
 
     PBRT_CPU_GPU
     SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
@@ -291,6 +385,10 @@ class ConductorBxDF {
         return mfDistrib.EffectivelySmooth() ? BxDFFlags::SpecularReflection
                                              : BxDFFlags::GlossyReflection;
     }
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {return {};}
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{return {};}
 
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(
@@ -399,6 +497,10 @@ class TopOrBottomBxDF {
         return *this;
     }
 
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {return {};}
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{return {};}
+
     PBRT_CPU_GPU
     SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
         return top ? top->f(wo, wi, mode) : bottom->f(wo, wi, mode);
@@ -443,6 +545,10 @@ class LayeredBxDF {
           albedo(albedo),
           maxDepth(maxDepth),
           nSamples(nSamples) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {return {};}
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{return {};}
 
     std::string ToString() const;
 
@@ -925,6 +1031,10 @@ class HairBxDF {
     PBRT_CPU_GPU
     HairBxDF(Float h, Float eta, const SampledSpectrum &sigma_a, Float beta_m,
              Float beta_n, Float alpha);
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {return {};}
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{return {};}
     PBRT_CPU_GPU
     SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const;
     PBRT_CPU_GPU
@@ -1027,6 +1137,10 @@ class MeasuredBxDF {
     MeasuredBxDF(const MeasuredBxDFData *brdf, const SampledWavelengths &lambda)
         : brdf(brdf), lambda(lambda) {}
 
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {return {};}
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{return {};}
+
     static MeasuredBxDFData *BRDFDataFromFile(const std::string &filename,
                                               Allocator alloc);
 
@@ -1076,6 +1190,10 @@ class NormalizedFresnelBxDF {
     NormalizedFresnelBxDF() = default;
     PBRT_CPU_GPU
     NormalizedFresnelBxDF(Float eta) : eta(eta) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {return {};}
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{return {};}
 
     PBRT_CPU_GPU
     BSDFSample Sample_f(Vector3f wo, Float uc, Point2f u, TransportMode mode,
@@ -1130,6 +1248,16 @@ class NormalizedFresnelBxDF {
   private:
     Float eta;
 };
+
+inline SampledSpectrum BxDF::GetDiffuse() const {
+    auto f = [&](auto ptr) -> SampledSpectrum { return ptr->GetDiffuse(); };
+    return Dispatch(f);
+}
+
+inline SampledSpectrum BxDF::GetSpecular() const {
+    auto f = [&](auto ptr) -> SampledSpectrum { return ptr->GetSpecular(); };
+    return Dispatch(f);
+}
 
 inline SampledSpectrum BxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
     auto f = [&](auto ptr) -> SampledSpectrum { return ptr->f(wo, wi, mode); };

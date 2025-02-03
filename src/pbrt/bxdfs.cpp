@@ -62,6 +62,61 @@ std::string ToString(TransportMode mode) {
 std::string DiffuseBxDF::ToString() const {
     return StringPrintf("[ DiffuseBxDF R: %s ]", R);
 }
+
+SampledSpectrum Schlick_Fresnel(SampledSpectrum F0, float VdotH)
+{
+    return F0 + (1.0f - F0) * Pow<5>(std::max<Float>(1.0f - VdotH, 0.0f));
+}
+
+Float G_Smith_over_NdotV(Float roughness, Float NdotV, Float NdotL)
+{
+    Float alpha = Pow<2>(roughness);
+    Float g1 = NdotV * sqrtf(Pow<2>(alpha) + (1.0f - Pow<2>(alpha)) * Pow<2>(NdotL));
+    Float g2 = NdotL * sqrtf(Pow<2>(alpha) + (1.0f - Pow<2>(alpha)) * Pow<2>(NdotV));
+    return 2.0 * NdotL / (g1 + g2);
+}
+
+SampledSpectrum GGX_times_NdotL(Vector3f V, Vector3f L, Vector3f N, Float roughness, SampledSpectrum F0)
+{
+    Vector3f H = Normalize(L + V);
+
+    Float NoL = pbrt::Clamp(Dot(N, L), 0.0f, 1.0f);
+    Float VoH = pbrt::Clamp(Dot(V, H), 0.0f, 1.0f);
+    Float NoV = pbrt::Clamp(Dot(N, V), 0.0f, 1.0f);
+    Float NoH = pbrt::Clamp(Dot(N, H), 0.0f, 1.0f);
+
+    if (NoL > 0.0f)
+    {
+        Float G = G_Smith_over_NdotV(roughness, NoV, NoL);
+        Float alpha = Pow<2>(roughness);
+        Float D = Pow<2>(alpha) / (Pi * Pow<2>(Pow<2>(NoH) * Pow<2>(alpha) + (1 - Pow<2>(NoH))));
+
+        SampledSpectrum F = Schlick_Fresnel(F0, VoH);
+
+        return F * (D * G / 4.0f);
+    }
+    return {};
+}
+
+SampledSpectrum MetalRoughnessBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+    if (!SameHemisphere(Vector3f(0,0,1), wi))
+        return SampledSpectrum(0.f);
+    // Vector3f n = SameHemisphere(wo, Vector3f(0,0,1)) ? Vector3f(0,0,1) : Vector3f(0,0,-1);
+    
+    Vector3f n = Vector3f(0,0,1);
+    Float diffuseLambert = std::max<Float>(0.0f, -Dot(n, -wi)) * InvPi;
+    SampledSpectrum specular;
+    if (roughness == 0)
+        specular = SampledSpectrum(0.0f);
+    else
+        specular = GGX_times_NdotL(wo, wi, n, std::max<Float>(roughness, 0.05f), specularF0);
+    return diffuseAlbedo * diffuseLambert + specular;
+}
+
+std::string MetalRoughnessBxDF::ToString() const {
+    return StringPrintf("[ MetalRoughnessBxDF diffuseAlbedo: %s specularF0: %s roughness: %s ]", diffuseAlbedo, specularF0, roughness);
+}
+
 std::string DiffuseTransmissionBxDF::ToString() const {
     return StringPrintf("[ DiffuseTransmissionBxDF R: %s T: %s ]", R, T);
 }

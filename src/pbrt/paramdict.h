@@ -67,7 +67,8 @@ enum class ParameterType {
 };
 
 // SpectrumType Definition
-enum class SpectrumType { Illuminant, Albedo, Unbounded };
+// *Add constant
+enum class SpectrumType { Illuminant, Albedo, Unbounded, Constant };
 
 inline std::string ToString(SpectrumType t) {
     switch (t) {
@@ -88,6 +89,7 @@ struct NamedTextures {
     std::map<std::string, SpectrumTexture> albedoSpectrumTextures;
     std::map<std::string, SpectrumTexture> unboundedSpectrumTextures;
     std::map<std::string, SpectrumTexture> illuminantSpectrumTextures;
+    std::map<std::string, SpectrumTexture> constantSpectrumTextures;
 };
 
 template <ParameterType PT>

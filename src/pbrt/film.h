@@ -156,6 +156,7 @@ class VisibleSurface {
     Float time = 0;
     Vector3f dpdx, dpdy;
     SampledSpectrum albedo;
+    SampledSpectrum specular;
     bool set = false;
 };
 
@@ -447,10 +448,10 @@ class RestirGBufferFilm : public FilmBase {
             rgb /= weightSum;
 
         // Add splat value at pixel
-        for (int c = 0; c < 3; ++c)
-            rgb[c] += splatScale * pixel.rgbSplat[c] / filterIntegral;
+        // for (int c = 0; c < 3; ++c)
+        //     rgb[c] += splatScale * pixel.rgbSplat[c] / filterIntegral;
 
-        rgb = outputRGBFromSensorRGB * rgb;
+        rgb = rgb;
 
         return rgb;
     }
@@ -475,6 +476,8 @@ class RestirGBufferFilm : public FilmBase {
         Normal3f nSum, nsSum;
         Point2f uvSum;
         double rgbAlbedoSum[3] = {0., 0., 0.};
+        double rgbSpecularSum[3] = {0., 0., 0.};
+        double roughSum = 0.;
         VarianceEstimator<Float> rgbVariance[3];
     };
     // RestirGBufferFilm Private Members
@@ -486,6 +489,8 @@ class RestirGBufferFilm : public FilmBase {
     bool writeFP16;
     Float filterIntegral;
     SquareMatrix<3> outputRGBFromSensorRGB;
+    //*Add
+    bool disableWavelength = true;
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////

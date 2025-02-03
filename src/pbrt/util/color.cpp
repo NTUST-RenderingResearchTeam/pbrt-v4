@@ -222,8 +222,9 @@ ColorEncoding ColorEncoding::Linear;
 ColorEncoding ColorEncoding::sRGB;
 
 const ColorEncoding ColorEncoding::Get(const std::string &name, Allocator alloc) {
-    if (name == "linear")
+    if (name == "linear"){
         return Linear;
+    }
     else if (name == "sRGB")
         return sRGB;
     else {

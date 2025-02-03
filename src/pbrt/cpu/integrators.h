@@ -219,7 +219,7 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
       int numLocalLightDISample = 8;
 
       // normal similarity threshold
-      Float Nthreshold = 0.2;
+      Float Nthreshold = 0.5;
       // depth similarity threshold
       Float Dthreshold = 0.1;
 

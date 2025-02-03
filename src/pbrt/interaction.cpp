@@ -156,6 +156,7 @@ RayDifferential SurfaceInteraction::SpawnRay(const RayDifferential &rayi,
     return rd;
 }
 
+// TODO:: get simpify bsdf
 BSDF SurfaceInteraction::GetBSDF(const RayDifferential &ray, SampledWavelengths &lambda,
                                  Camera camera, ScratchBuffer &scratchBuffer,
                                  Sampler sampler) {
