@@ -1328,6 +1328,7 @@ std::string GPUSpectrumImageTexture::ToString() const {
 GPUFloatImageTexture *GPUFloatImageTexture::Create(
     const Transform &renderFromTexture, const TextureParameterDictionary &parameters,
     const FileLoc *loc, Allocator alloc) {
+    LOG_VERBOSE("Starting Create gpu float image texture");
     // Initialize _ImageTexture_ parameters
     Float maxAniso = parameters.GetOneFloat("maxanisotropy", 8.f);
     std::string filter = parameters.GetOneString("filter", "bilinear");
@@ -1364,6 +1365,7 @@ GPUFloatImageTexture *GPUFloatImageTexture::Create(
         nMIPMapLevels = iter->second.nMIPMapLevels;
         textureCacheMutex.unlock();
     } else {
+        LOG_VERBOSE("No cache");
         textureCacheMutex.unlock();
 
         ImageAndMetadata immeta = Image::Read(filename);
@@ -1438,7 +1440,6 @@ GPUFloatImageTexture *GPUFloatImageTexture::Create(
 
     TextureMapping2D mapping =
         TextureMapping2D::Create(parameters, renderFromTexture, loc, alloc);
-
     return alloc.new_object<GPUFloatImageTexture>(filename, mapping, texObj, scale,
                                                   invert);
 }
@@ -1469,8 +1470,12 @@ FloatTexture FloatTexture::Create(const std::string &name,
     else if (name == "bilerp")
         tex = FloatBilerpTexture::Create(renderFromTexture, parameters, loc, alloc);
     else if (name == "imagemap") {
+
         if (gpu)
+        {
+            LOG_VERBOSE("Load gpu float imagemap");
             tex = GPUFloatImageTexture::Create(renderFromTexture, parameters, loc, alloc);
+        }
         else
             tex = FloatImageTexture::Create(renderFromTexture, parameters, loc, alloc);
     } else if (name == "checkerboard")
@@ -1485,7 +1490,10 @@ FloatTexture FloatTexture::Create(const std::string &name,
         tex = WindyTexture::Create(renderFromTexture, parameters, loc, alloc);
     else if (name == "ptex") {
         if (gpu)
+        {
+            LOG_VERBOSE("Load gpu float ptex");
             tex = GPUFloatPtexTexture::Create(renderFromTexture, parameters, loc, alloc);
+        }
         else
             tex = FloatPtexTexture::Create(renderFromTexture, parameters, loc, alloc);
     } else

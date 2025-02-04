@@ -28,6 +28,7 @@
 
 #include <iostream>
 #include <mutex>
+#include <future>
 
 namespace pbrt {
 
@@ -1204,6 +1205,80 @@ void BasicScene::CreateMaterials(const NamedTextures &textures,
     }
 }
 
+// 創建一個結構來保存紋理創建的結果
+struct TextureCreationResult {
+    std::string key;
+    FloatTexture texture;
+    bool success;
+    std::string errorMessage;
+};
+
+TextureCreationResult createSingleTexture(
+    const std::pair<std::string, TextureSceneEntity> &tex,
+    ThreadLocal<Allocator> &threadAllocators, NamedTextures &textures, bool useGPU) {
+    try {
+        Allocator alloc = threadAllocators.Get();
+        pbrt::Transform renderFromTexture = tex.second.renderFromObject.startTransform;
+        TextureParameterDictionary texDict(&tex.second.parameters, &textures);
+
+        FloatTexture t = FloatTexture::Create(tex.second.name, renderFromTexture, texDict,
+                                              &tex.second.loc, alloc, useGPU);
+
+        return TextureCreationResult{tex.first, std::move(t), true, ""};
+    } catch (const std::exception &e) {
+        return TextureCreationResult{tex.first, FloatTexture{}, false, e.what()};
+    }
+}
+
+// 主要的非同步紋理載入函數
+void loadTexturesAsync(
+    const std::vector<std::pair<std::string, TextureSceneEntity>> &serialFloatTextures,
+    ThreadLocal<Allocator> &threadAllocators, NamedTextures &textures, bool useGPU) {
+    // 存儲所有的 future
+    std::vector<std::future<TextureCreationResult>> futures;
+
+    // 獲取硬件支持的並發線程數
+    const size_t maxThreads = std::thread::hardware_concurrency();
+    // 限制同時運行的任務數，避免資源耗盡
+    const size_t batchSize = std::min(maxThreads, serialFloatTextures.size());
+
+    LOG_VERBOSE("Starting async texture loading with %d threads", batchSize);
+
+    // 啟動異步任務
+    for (const auto &tex : serialFloatTextures) {
+        futures.push_back(std::async(std::launch::async, createSingleTexture,
+                                     std::ref(tex), std::ref(threadAllocators),
+                                     std::ref(textures), useGPU));
+
+        // 如果達到批次大小，等待當前批次完成
+        if (futures.size() >= batchSize) {
+            for (auto &f : futures) {
+                auto result = f.get();
+                if (result.success) {
+                    textures.floatTextures[result.key] = std::move(result.texture);
+                    LOG_VERBOSE("Successfully loaded texture: %s", result.key.c_str());
+                } else {
+                    LOG_ERROR("Failed to load texture %s: %s", result.key.c_str(),
+                              result.errorMessage.c_str());
+                }
+            }
+            futures.clear();
+        }
+    }
+
+    // 處理剩餘的任務
+    for (auto &f : futures) {
+        auto result = f.get();
+        if (result.success) {
+            textures.floatTextures[result.key] = std::move(result.texture);
+            LOG_VERBOSE("Successfully loaded texture: %s", result.key.c_str());
+        } else {
+            LOG_ERROR("Failed to load texture %s: %s", result.key.c_str(),
+                      result.errorMessage.c_str());
+        }
+    }
+}
+
 NamedTextures BasicScene::CreateTextures() {
     NamedTextures textures;
 
@@ -1229,6 +1304,7 @@ NamedTextures BasicScene::CreateTextures() {
     Allocator alloc = threadAllocators.Get();
     // Create the other SpectrumTypes for the spectrum textures.
     for (const auto &tex : asyncSpectrumTextures) {
+        LOG_VERBOSE("New async spectrum textures");
         pbrt::Transform renderFromTexture = tex.second.renderFromObject.startTransform;
         // These are all image textures, so nullptr is fine for the
         // textures, as earlier.
@@ -1246,18 +1322,28 @@ NamedTextures BasicScene::CreateTextures() {
         textures.illuminantSpectrumTextures[tex.first] = illumTex;
     }
 
-    // And do the rest serially
-    for (auto &tex : serialFloatTextures) {
-        Allocator alloc = threadAllocators.Get();
+    if (Options->useGPU)
+    {
+        LOG_VERBOSE("Start Async New serial float textures");
+        // 替換原來的同步循環
+        loadTexturesAsync(serialFloatTextures, threadAllocators, textures,
+                          Options->useGPU);
+    } else {
+        // And do the rest serially
+        for (auto &tex : serialFloatTextures) {
+            LOG_VERBOSE("New serial float textures");
+            Allocator alloc = threadAllocators.Get();
 
-        pbrt::Transform renderFromTexture = tex.second.renderFromObject.startTransform;
-        TextureParameterDictionary texDict(&tex.second.parameters, &textures);
-        FloatTexture t = FloatTexture::Create(tex.second.name, renderFromTexture, texDict,
-                                              &tex.second.loc, alloc, Options->useGPU);
-        textures.floatTextures[tex.first] = t;
+            pbrt::Transform renderFromTexture = tex.second.renderFromObject.startTransform;
+            TextureParameterDictionary texDict(&tex.second.parameters, &textures);
+            FloatTexture t = FloatTexture::Create(tex.second.name, renderFromTexture, texDict,
+                                                  &tex.second.loc, alloc, Options->useGPU);
+            textures.floatTextures[tex.first] = t;
+        }
     }
 
     for (auto &tex : serialSpectrumTextures) {
+        LOG_VERBOSE("New serial spectrum textures");
         Allocator alloc = threadAllocators.Get();
 
         if (tex.second.renderFromObject.IsAnimated())
