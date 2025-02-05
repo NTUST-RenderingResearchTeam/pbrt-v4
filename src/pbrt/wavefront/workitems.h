@@ -1,4 +1,4 @@
-// pbrt is Copyright(c) 1998-2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
+﻿// pbrt is Copyright(c) 1998-2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
 // The pbrt source code is licensed under the Apache License, Version 2.0.
 // SPDX: Apache-2.0
 
@@ -18,6 +18,214 @@
 #include <pbrt/wavefront/workqueue.h>
 
 namespace pbrt {
+
+struct DIReservoir {
+    DIReservoir() = default;
+
+    //pstd::optional<SampledLight> sampledLight = {};
+
+    pstd::optional<LightLiSample> ls = {};
+    Point2f uv;
+
+    bool visibility = true;
+    bool isVisCheck = false;
+    Float targetPdf = 0.f;
+    Float weightSum = 0.f;
+    Float W = 0.f;
+    Point2i spatialDistance = Point2i(0, 0);
+    int M = 0;
+    int age = 0;
+
+    PBRT_CPU_GPU
+    void combineReservoir(const DIReservoir &src, Sampler &sampler);
+};
+
+PBRT_CPU_GPU 
+void inline DIReservoir::combineReservoir(const DIReservoir& src, Sampler& sampler)
+{
+    LOG_VERBOSE("Start combine reservoir");
+    float risWeight = src.targetPdf * src.W * src.M;
+    // float risWeight = src.weightSum;
+
+    M = M + src.M;
+    weightSum += risWeight;
+
+    Float rng = sampler.Get1D();
+
+    if (W < src.W){
+        PBRT_DBG("new combine");
+        W = src.W;
+        targetPdf = src.targetPdf;
+        visibility = src.visibility;
+        isVisCheck = src.isVisCheck;
+        if (false) {
+            isVisCheck = false;
+            visibility = true;
+        }
+        uv = src.uv;
+        //sampledLight = sampledLight;
+        ls = src.ls;
+        spatialDistance = src.spatialDistance;
+        age = src.age;
+        age++;
+    }
+}
+
+template <>
+struct SOA<DIReservoir> {
+  public:
+    SOA() = default;
+    SOA(int size, Allocator alloc) {
+        // Basic Float members
+        targetPdf = alloc.allocate_object<Float>(size);
+        weightSum = alloc.allocate_object<Float>(size);
+        W = alloc.allocate_object<Float>(size);
+        M = alloc.allocate_object<Float>(size);           // Store int as Float
+        age = alloc.allocate_object<Float>(size);         // Store int as Float
+        visibility = alloc.allocate_object<Float>(size);  // Store bool as Float
+        isVisCheck = alloc.allocate_object<Float>(size);  // Store bool as Float
+
+        // uv and spatialDistance packed into Float4
+        uvAndFlags = alloc.allocate_object<Float4>(size);
+
+        // LightLiSample members using Float4
+        lightL = alloc.allocate_object<Float4>(size);
+        lightWi = alloc.allocate_object<Float4>(size);
+        lightPdf = alloc.allocate_object<Float4>(size);
+
+        // Interaction members using Float4
+        lightPi = alloc.allocate_object<Float4>(size);
+        lightWo = alloc.allocate_object<Float4>(size);
+        lightN = alloc.allocate_object<Float4>(size);
+        lightUV = alloc.allocate_object<Float4>(size);
+    }
+
+    PBRT_CPU_GPU
+    DIReservoir operator[](int i) const {
+        DIReservoir res;
+
+        // Basic members
+        res.targetPdf = targetPdf[i];
+        res.weightSum = weightSum[i];
+        res.W = W[i];
+        res.M = int(M[i]);
+        res.age = int(age[i]);
+        res.visibility = visibility[i] != 0;
+        res.isVisCheck = isVisCheck[i] != 0;
+
+        // Get uv and spatialDistance from Float4
+        Float4 uvFlags = Load4(uvAndFlags + i);
+        res.uv = Point2f(uvFlags.v[0], uvFlags.v[1]);
+        res.spatialDistance = Point2i(int(uvFlags.v[2]), int(uvFlags.v[3]));
+
+        // LightLiSample
+        Float4 lpdf = Load4(lightPdf + i);
+        if (lpdf.v[3] != 0) {  // Use w component as has_value flag
+            Float4 L = Load4(lightL + i);
+            Float4 wi = Load4(lightWi + i);
+
+            // Construct Interaction
+            Interaction pLight;
+            Float4 pi = Load4(lightPi + i);
+            pLight.pi = Point3fi(pi.v[0], pi.v[1], pi.v[2]);
+            pLight.time = pi.v[3];
+
+            Float4 wo = Load4(lightWo + i);
+            pLight.wo = Vector3f(wo.v[0], wo.v[1], wo.v[2]);
+
+            Float4 n = Load4(lightN + i);
+            pLight.n = Normal3f(n.v[0], n.v[1], n.v[2]);
+
+            Float4 uv = Load4(lightUV + i);
+            pLight.uv = Point2f(uv.v[0], uv.v[1]);
+
+            SampledSpectrum ssl;
+            ssl[0] = L.v[0];
+            ssl[1] = L.v[1];
+            ssl[2] = L.v[2];
+            ssl[3] = L.v[3];
+            res.ls = LightLiSample(ssl,
+                           Vector3f(wi.v[0], wi.v[1], wi.v[2]), lpdf.v[0], pLight,
+                           LightType(int(lpdf.v[1])));
+        }
+
+        return res;
+    }
+
+    struct GetSetIndirector {
+        PBRT_CPU_GPU
+        operator DIReservoir() const { return (*(const SOA *)soa)[index]; }
+
+        PBRT_CPU_GPU
+        void operator=(DIReservoir res) {
+            // Basic members
+            soa->targetPdf[index] = res.targetPdf;
+            soa->weightSum[index] = res.weightSum;
+            soa->W[index] = res.W;
+            soa->M[index] = Float(res.M);
+            soa->age[index] = Float(res.age);
+            soa->visibility[index] = res.visibility ? 1.f : 0.f;
+            soa->isVisCheck[index] = res.isVisCheck ? 1.f : 0.f;
+
+            // Pack uv and spatialDistance into Float4
+            soa->uvAndFlags[index] =
+                Float4{res.uv.x, res.uv.y, Float(res.spatialDistance.x),
+                       Float(res.spatialDistance.y)};
+
+            // LightLiSample
+            if (res.ls) {
+                const auto &ls = *res.ls;
+                soa->lightL[index] = Float4{ls.L[0], ls.L[1], ls.L[2], 0};
+                soa->lightWi[index] = Float4{ls.wi.x, ls.wi.y, ls.wi.z, 0};
+                soa->lightPdf[index] =
+                    Float4{ls.pdf, Float(ls.type), 0, 1};  // w=1 indicates has_value
+
+                // Interaction
+                const auto &pLight = ls.pLight;
+                soa->lightPi[index] =
+                    Float4{pLight.pi.x.Midpoint(), pLight.pi.y.Midpoint(),
+                           pLight.pi.z.Midpoint(),
+                           pLight.time};
+                soa->lightWo[index] = Float4{pLight.wo.x, pLight.wo.y, pLight.wo.z, 0};
+                soa->lightN[index] = Float4{pLight.n.x, pLight.n.y, pLight.n.z, 0};
+                soa->lightUV[index] = Float4{pLight.uv.x, pLight.uv.y, 0, 0};
+            } else {
+                // Set has_value flag to false
+                soa->lightPdf[index] = Float4{0, 0, 0, 0};
+            }
+        }
+
+        SOA *soa;
+        int index;
+    };
+
+    PBRT_CPU_GPU
+    GetSetIndirector operator[](int i) { return GetSetIndirector{this, i}; }
+
+  private:
+    // Basic members
+    Float *PBRT_RESTRICT targetPdf;
+    Float *PBRT_RESTRICT weightSum;
+    Float *PBRT_RESTRICT W;
+    Float *PBRT_RESTRICT M;
+    Float *PBRT_RESTRICT age;
+    Float *PBRT_RESTRICT visibility;
+    Float *PBRT_RESTRICT isVisCheck;
+
+    // Packed uv and spatialDistance
+    Float4 *PBRT_RESTRICT uvAndFlags;
+
+    // LightLiSample members
+    Float4 *PBRT_RESTRICT lightL;
+    Float4 *PBRT_RESTRICT lightWi;
+    Float4 *PBRT_RESTRICT lightPdf;  // {pdf, type, unused, has_value}
+
+    // Interaction members
+    Float4 *PBRT_RESTRICT lightPi;
+    Float4 *PBRT_RESTRICT lightWo;
+    Float4 *PBRT_RESTRICT lightN;
+    Float4 *PBRT_RESTRICT lightUV;
+};
 
 // RaySamples Definition
 struct RaySamples {
@@ -113,6 +321,8 @@ struct PixelSampleState {
     VisibleSurface visibleSurface;
     SampledSpectrum cameraRayWeight;
     RaySamples samples;
+    SampledSpectrum DirectL;
+    DIReservoir diReservoir;
 };
 
 // RayWorkItem Definition

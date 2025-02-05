@@ -26,6 +26,7 @@ soa SubsurfaceInteraction;
 soa TabulatedBSSRDF;
 soa Vector3f;
 soa VisibleSurface;
+soa DIReservoir;
 
 soa PixelSampleState {
     Float filterWeight;
@@ -35,6 +36,8 @@ soa PixelSampleState {
     SampledSpectrum cameraRayWeight;
     VisibleSurface visibleSurface;
     RaySamples samples;
+    SampledSpectrum DirectL;
+    DIReservoir diReservoir;
 };
 
 soa RayWorkItem {

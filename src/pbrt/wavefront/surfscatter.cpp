@@ -58,6 +58,7 @@ template <typename ConcreteMaterial, typename TextureEvaluator>
 void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQueue,
                                                       Transform movingFromCamera,
                                                       int wavefrontDepth) {
+    LOG_VERBOSE("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     // Get BSDF for items in _evalQueue_ and sample illumination
     // Construct _desc_ for material/texture evaluation kernel
     std::string desc = StringPrintf(
@@ -69,6 +70,7 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
     ForAllQueued(
         desc.c_str(), queue, maxQueueSize,
         PBRT_CPU_GPU_LAMBDA(const MaterialEvalWorkItem<ConcreteMaterial> w) {
+            LOG_VERBOSE("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
             // Evaluate material and BSDF for ray intersection
             TextureEvaluator texEval;
             // Compute differentials for position and $(u,v)$ at intersection point
@@ -261,7 +263,9 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
 
             // Sample light and enqueue shadow ray at intersection point
             BxDFFlags flags = bsdf.Flags();
+            LOG_VERBOSE("A");
             if (IsNonSpecular(flags)) {
+                LOG_VERBOSE("B");
                 // Choose a light source using the _LightSampler_
                 LightSampleContext ctx(w.pi, w.n, ns);
                 if (IsReflective(flags) && !IsTransmissive(flags))
@@ -283,6 +287,9 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
                 SampledSpectrum f = bsdf.f<ConcreteBxDF>(wo, wi);
                 if (!f)
                     return;
+                LOG_VERBOSE("C");
+                
+
 
                 // Compute path throughput and path PDFs for light sample
                 SampledSpectrum beta = w.beta * f * AbsDot(wi, ns);
@@ -306,7 +313,36 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
 
                 // Enqueue shadow ray with tentative radiance contribution
                 SampledSpectrum Ld = beta * ls->L;
-                Ray ray = SpawnRayTo(w.pi, w.n, w.time, ls->pLight.pi, ls->pLight.n);
+
+                // Direct lighting and restir di
+                // RIS source PDF
+                Float source_p = lightPDF;
+
+                ////// RIS target PDF
+                Float target_p = 0.0f;
+
+                ////// RIS f(x)
+                SampledSpectrum w_ld = ClampZero(ls->L) * f;
+                target_p += w_ld.Average();// w_ld.ToLuminance(pixelSampleState.lambda[w.pixelIndex]);
+
+                DIReservoir localLight;
+                localLight.targetPdf = target_p;
+                localLight.uv = raySamples.direct.u;
+                //////localLight.sampledLight = sampledLight;
+                localLight.ls = ls;
+                localLight.W = Ld.Average();
+                ////
+                DIReservoir dstReservoir = pixelSampleState.diReservoir[w.pixelIndex];
+                dstReservoir.combineReservoir(localLight, sampler);
+                pixelSampleState.diReservoir[w.pixelIndex] = dstReservoir;
+                LOG_VERBOSE("pixel index: %d, target:%f, w:%f, m:%f, sumW:%f",
+                            w.pixelIndex, dstReservoir.targetPdf, dstReservoir.W,
+                            dstReservoir.M, dstReservoir.weightSum);
+                Ray ray;
+                if (dstReservoir.W > 0 && dstReservoir.ls)
+                    ray = SpawnRayTo(w.pi, w.n, w.time, dstReservoir.ls->pLight.pi, dstReservoir.ls->pLight.n);
+                else
+                    ray = SpawnRayTo(w.pi, w.n, w.time, ls->pLight.pi, ls->pLight.n);
                 // Initialize _ray_ medium if media are present
                 if (haveMedia)
                     ray.medium = Dot(ray.d, w.n) > 0 ? w.mediumInterface.outside

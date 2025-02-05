@@ -442,7 +442,6 @@ Float WavefrontPathIntegrator::Render() {
                     sampleStageIndex = 8;
                     SampleSubsurface(wavefrontDepth);
                 }
-
                 UpdateFilm();
             }
 
@@ -772,4 +771,459 @@ void WavefrontPathIntegrator::UpdateFramebufferFromFilm(Bounds2i pixelBounds,
         });
 }
 
+ReSTIRDIWavefrontPathIntegrator::ReSTIRDIWavefrontPathIntegrator(
+    pstd::pmr::memory_resource *_memoryResource, BasicScene &scene) {
+    memoryResource = _memoryResource;
+    exitCopyThread = new std::atomic<bool>(false);
+    ThreadLocal<Allocator> threadAllocators(
+        [_memoryResource]() { return Allocator(_memoryResource); });
+
+    Allocator alloc = threadAllocators.Get();
+
+    // Allocate all of the data structures that represent the scene...
+    std::map<std::string, Medium> media = scene.CreateMedia();
+
+    // "haveMedia" is a bit of a misnomer in that determines both whether
+    // queues are allocated for the medium sampling kernels and they are
+    // launched as well as whether the ray marching shadow ray kernel is
+    // launched... Thus, it will be true if there actually are no media,
+    // but some "interface" materials are present in the scene.
+    haveMedia = false;
+    // Check the shapes and instance definitions...
+    for (const auto &shape : scene.shapes)
+        if (!shape.insideMedium.empty() || !shape.outsideMedium.empty())
+            haveMedia = true;
+    for (const auto &shape : scene.animatedShapes)
+        if (!shape.insideMedium.empty() || !shape.outsideMedium.empty())
+            haveMedia = true;
+    for (const auto &instanceDefinition : scene.instanceDefinitions) {
+        for (const auto &shape : instanceDefinition.second->shapes)
+            if (!shape.insideMedium.empty() || !shape.outsideMedium.empty())
+                haveMedia = true;
+        for (const auto &shape : instanceDefinition.second->animatedShapes)
+            if (!shape.insideMedium.empty() || !shape.outsideMedium.empty())
+                haveMedia = true;
+    }
+
+    // Textures
+    LOG_VERBOSE("Starting to create textures");
+    NamedTextures textures = scene.CreateTextures();
+    LOG_VERBOSE("Done creating textures");
+
+    LOG_VERBOSE("Starting to create lights");
+    pstd::vector<Light> allLights;
+    std::map<int, pstd::vector<Light> *> shapeIndexToAreaLights;
+
+    infiniteLights = alloc.new_object<pstd::vector<Light>>(alloc);
+
+    for (Light l : scene.CreateLights(textures, &shapeIndexToAreaLights)) {
+        if (l.Is<UniformInfiniteLight>() || l.Is<ImageInfiniteLight>() ||
+            l.Is<PortalImageInfiniteLight>())
+            infiniteLights->push_back(l);
+
+        allLights.push_back(l);
+    }
+    LOG_VERBOSE("Done creating lights");
+
+    LOG_VERBOSE("Starting to create materials");
+    std::map<std::string, pbrt::Material> namedMaterials;
+    std::vector<pbrt::Material> materials;
+    scene.CreateMaterials(textures, &namedMaterials, &materials);
+
+    haveBasicEvalMaterial.fill(false);
+    haveUniversalEvalMaterial.fill(false);
+    haveSubsurface = false;
+    for (Material m : materials)
+        updateMaterialNeeds(m, &haveBasicEvalMaterial, &haveUniversalEvalMaterial,
+                            &haveSubsurface, &haveMedia);
+    for (const auto &m : namedMaterials)
+        updateMaterialNeeds(m.second, &haveBasicEvalMaterial, &haveUniversalEvalMaterial,
+                            &haveSubsurface, &haveMedia);
+    LOG_VERBOSE("Finished creating materials");
+
+    // Retrieve these here so that the CPU isn't writing to managed memory
+    // concurrently with the OptiX acceleration-structure construction work
+    // that follows. (Verbotten on Windows.)
+    camera = scene.GetCamera();
+    film = camera.GetFilm();
+    filter = film.GetFilter();
+    sampler = scene.GetSampler();
+
+    if (Options->useGPU) {
+#ifdef PBRT_BUILD_GPU_RENDERER
+        CUDATrackedMemoryResource *mr =
+            dynamic_cast<CUDATrackedMemoryResource *>(memoryResource);
+        CHECK(mr);
+        aggregate = new OptiXAggregate(scene, mr, textures, shapeIndexToAreaLights, media,
+                                       namedMaterials, materials);
+#else
+        LOG_FATAL("Options->useGPU was set without PBRT_BUILD_GPU_RENDERER enabled");
+#endif
+    } else
+        aggregate = new CPUAggregate(scene, textures, shapeIndexToAreaLights, media,
+                                     namedMaterials, materials);
+
+    // Preprocess the light sources
+    for (Light light : allLights)
+        light.Preprocess(aggregate->Bounds());
+
+    bool haveLights = !allLights.empty();
+    for (const auto &m : media)
+        haveLights |= m.second.IsEmissive();
+    if (!haveLights)
+        ErrorExit("No light sources specified");
+
+    LOG_VERBOSE("Starting to create light sampler");
+    std::string lightSamplerName =
+        scene.integrator.parameters.GetOneString("lightsampler", "bvh");
+    if (allLights.size() == 1)
+        lightSamplerName = "uniform";
+    lightSamplerName = "uniform";
+    lightSampler = LightSampler::Create(lightSamplerName, allLights, alloc);
+    LOG_VERBOSE("Finished creating light sampler");
+
+    if (scene.integrator.name != "path" && scene.integrator.name != "volpath")
+        Warning(&scene.integrator.loc,
+                "Ignoring specified integrator \"%s\": the wavefront integrator "
+                "always uses a \"volpath\" integrator.",
+                scene.integrator.name);
+
+    // Integrator parameters
+    regularize = scene.integrator.parameters.GetOneBool("regularize", false);
+    maxDepth = scene.integrator.parameters.GetOneInt("maxdepth", 5);
+
+    initializeVisibleSurface = film.UsesVisibleSurface();
+    samplesPerPixel = sampler.SamplesPerPixel();
+
+    // Warn about unsupported stuff...
+    if (Options->forceDiffuse)
+        ErrorExit("The wavefront integrator does not support --force-diffuse.");
+    if (Options->writePartialImages)
+        Warning("The wavefront integrator does not support --write-partial-images.");
+    if (Options->recordPixelStatistics)
+        ErrorExit("The wavefront integrator does not support --pixelstats.");
+    if (!Options->mseReferenceImage.empty())
+        ErrorExit("The wavefront integrator does not support --mse-reference-image.");
+    if (!Options->mseReferenceOutput.empty())
+        ErrorExit("The wavefront integrator does not support --mse-reference-out.");
+
+        ///////////////////////////////////////////////////////////////////////////
+        // Allocate storage for all of the queues/buffers...
+
+#ifdef PBRT_BUILD_GPU_RENDERER
+    size_t startSize = 0;
+    if (Options->useGPU) {
+        CUDATrackedMemoryResource *mr =
+            dynamic_cast<CUDATrackedMemoryResource *>(memoryResource);
+        CHECK(mr);
+        startSize = mr->BytesAllocated();
+    }
+#endif  // PBRT_BUILD_GPU_RENDERER
+
+    // Compute number of scanlines to render per pass
+    Vector2i resolution = film.PixelBounds().Diagonal();
+    // TODO: make this configurable. Base it on the amount of GPU memory?
+    int maxSamples = 1024 * 1024;
+    scanlinesPerPass = std::max(1, maxSamples / resolution.x);
+    int nPasses = (resolution.y + scanlinesPerPass - 1) / scanlinesPerPass;
+    scanlinesPerPass = (resolution.y + nPasses - 1) / nPasses;
+    maxQueueSize = resolution.x * scanlinesPerPass;
+    LOG_VERBOSE("Will render in %d passes %d scanlines per pass\n", nPasses,
+                scanlinesPerPass);
+
+    pixelSampleState = SOA<PixelSampleState>(maxQueueSize, alloc);
+
+    rayQueues[0] = alloc.new_object<RayQueue>(maxQueueSize, alloc);
+    rayQueues[1] = alloc.new_object<RayQueue>(maxQueueSize, alloc);
+
+    shadowRayQueue = alloc.new_object<ShadowRayQueue>(maxQueueSize, alloc);
+
+    if (haveSubsurface) {
+        bssrdfEvalQueue =
+            alloc.new_object<GetBSSRDFAndProbeRayQueue>(maxQueueSize, alloc);
+        subsurfaceScatterQueue =
+            alloc.new_object<SubsurfaceScatterQueue>(maxQueueSize, alloc);
+    }
+
+    if (infiniteLights->size())
+        escapedRayQueue = alloc.new_object<EscapedRayQueue>(maxQueueSize, alloc);
+    hitAreaLightQueue = alloc.new_object<HitAreaLightQueue>(maxQueueSize, alloc);
+
+    basicEvalMaterialQueue = alloc.new_object<MaterialEvalQueue>(
+        maxQueueSize, alloc,
+        pstd::MakeConstSpan(&haveBasicEvalMaterial[1], haveBasicEvalMaterial.size() - 1));
+    universalEvalMaterialQueue = alloc.new_object<MaterialEvalQueue>(
+        maxQueueSize, alloc,
+        pstd::MakeConstSpan(&haveUniversalEvalMaterial[1],
+                            haveUniversalEvalMaterial.size() - 1));
+
+    if (haveMedia) {
+        mediumSampleQueue = alloc.new_object<MediumSampleQueue>(maxQueueSize, alloc);
+
+        // TODO: in the presence of multiple PhaseFunction implementations,
+        // it could be worthwhile to see which are present in the scene and
+        // then initialize havePhase accordingly...
+        pstd::array<bool, PhaseFunction::NumTags()> havePhase;
+        havePhase.fill(true);
+        mediumScatterQueue =
+            alloc.new_object<MediumScatterQueue>(maxQueueSize, alloc, havePhase);
+    }
+
+    stats = alloc.new_object<Stats>(maxDepth, alloc);
+
+#ifdef PBRT_BUILD_GPU_RENDERER
+    if (Options->useGPU) {
+        CUDATrackedMemoryResource *mr =
+            dynamic_cast<CUDATrackedMemoryResource *>(memoryResource);
+        CHECK(mr);
+        size_t endSize = mr->BytesAllocated();
+        pathIntegratorBytes += endSize - startSize;
+    }
+#endif  // PBRT_BUILD_GPU_RENDERER
+}
+
+Float ReSTIRDIWavefrontPathIntegrator::Render() {
+    Bounds2i pixelBounds = film.PixelBounds();
+    Vector2i resolution = pixelBounds.Diagonal();
+
+    GUI *gui = nullptr;
+    // FIXME: camera animation; whatever...
+    Transform renderFromCamera =
+        camera.GetCameraTransform().RenderFromCamera().startTransform;
+    Transform cameraFromRender = Inverse(renderFromCamera);
+    Transform cameraFromWorld =
+        camera.GetCameraTransform().CameraFromWorld(camera.SampleTime(0.f));
+    if (Options->interactive) {
+        if (!Options->displayServer.empty())
+            ErrorExit(
+                "--interactive and --display-server cannot be used at the same time.");
+        gui = new GUI(film.GetFilename(), resolution, aggregate->Bounds());
+    }
+
+    Timer timer;
+    // Prefetch allocations to GPU memory
+#ifdef PBRT_BUILD_GPU_RENDERER
+    if (Options->useGPU)
+        PrefetchGPUAllocations();
+#endif  // PBRT_BUILD_GPU_RENDERER
+
+    // Launch thread to copy image for display server, if enabled
+    if (!Options->displayServer.empty())
+        StartDisplayThread();
+
+    // Loop over sample indices and evaluate pixel samples
+    int firstSampleIndex = 0, lastSampleIndex = samplesPerPixel;
+    // Update sample index range based on debug start, if provided
+    if (!Options->debugStart.empty()) {
+        std::vector<int> values = SplitStringToInts(Options->debugStart, ',');
+        if (values.size() != 1 && values.size() != 2)
+            ErrorExit("Expected either one or two integer values for --debugstart.");
+
+        firstSampleIndex = values[0];
+        if (values.size() == 2)
+            lastSampleIndex = firstSampleIndex + values[1];
+        else
+            lastSampleIndex = firstSampleIndex + 1;
+    }
+
+    ProgressReporter progress(lastSampleIndex - firstSampleIndex, "Rendering",
+                              Options->quiet || Options->interactive, Options->useGPU);
+
+    int sampleStageIndex;
+    for (int sampleIndex = firstSampleIndex; sampleIndex < lastSampleIndex || gui;
+         ++sampleIndex) {
+        // Attempt to work around issue #145.
+#if !(defined(PBRT_IS_WINDOWS) && defined(PBRT_BUILD_GPU_RENDERER) && \
+      __CUDACC_VER_MAJOR__ == 11 && __CUDACC_VER_MINOR__ == 1)
+        CheckCallbackScope _([&]() {
+            return StringPrintf(
+                "Wavefront rendering failed at sample %d stage %d. Debug with "
+                "\"--debugstart %d\"\n",
+                sampleIndex, sampleStageIndex, sampleIndex);
+        });
+#endif
+
+        // Keep running the outer for loop but don't take more samples if
+        // the GUI is being used so that the user can move the camera, etc.
+        if (sampleIndex < lastSampleIndex) {
+            // Render image for sample _sampleIndex_
+            LOG_VERBOSE("Starting to submit work for sample %d", sampleIndex);
+            for (int y0 = pixelBounds.pMin.y; y0 < pixelBounds.pMax.y;
+                 y0 += scanlinesPerPass) {
+                // Generate camera rays for current scanline range
+                RayQueue *cameraRayQueue = CurrentRayQueue(0);
+                Do(
+                    "Reset ray queue", PBRT_CPU_GPU_LAMBDA() {
+                        PBRT_DBG("Starting scanlines at y0 = %d, sample %d / %d\n", y0,
+                                 sampleIndex, samplesPerPixel);
+                        cameraRayQueue->Reset();
+                    });
+
+                Transform cameraMotion;
+                if (gui)
+                    cameraMotion =
+                        renderFromCamera * gui->GetCameraTransform() * cameraFromRender;
+
+                sampleStageIndex = 0;
+                GenerateCameraRays(y0, cameraMotion, sampleIndex);
+                Do(
+                    "Update camera ray stats", PBRT_CPU_GPU_LAMBDA() {
+                        stats->cameraRays += cameraRayQueue->Size();
+                    });
+
+                // Trace rays and estimate radiance up to maximum ray depth
+                for (int wavefrontDepth = 0; true; ++wavefrontDepth) {
+                    // Reset queues before tracing rays
+                    RayQueue *nextQueue = NextRayQueue(wavefrontDepth);
+                    Do(
+                        "Reset queues before tracing rays", PBRT_CPU_GPU_LAMBDA() {
+                            nextQueue->Reset();
+                            // Reset queues before tracing next batch of rays
+                            if (mediumSampleQueue)
+                                mediumSampleQueue->Reset();
+                            if (mediumScatterQueue)
+                                mediumScatterQueue->Reset();
+
+                            if (escapedRayQueue)
+                                escapedRayQueue->Reset();
+                            hitAreaLightQueue->Reset();
+
+                            basicEvalMaterialQueue->Reset();
+                            universalEvalMaterialQueue->Reset();
+
+                            if (bssrdfEvalQueue)
+                                bssrdfEvalQueue->Reset();
+                            if (subsurfaceScatterQueue)
+                                subsurfaceScatterQueue->Reset();
+                        });
+
+                    // Follow active ray paths and accumulate radiance estimates
+                    sampleStageIndex = 1;
+                    GenerateRaySamples(wavefrontDepth, sampleIndex);
+
+                    // Find closest intersections along active rays
+                    sampleStageIndex = 2;
+                    aggregate->IntersectClosest(
+                        maxQueueSize, CurrentRayQueue(wavefrontDepth), escapedRayQueue,
+                        hitAreaLightQueue, basicEvalMaterialQueue,
+                        universalEvalMaterialQueue, mediumSampleQueue,
+                        NextRayQueue(wavefrontDepth));
+
+                    if (wavefrontDepth > 0) {
+                        // As above, with the indexing...
+                        RayQueue *statsQueue = CurrentRayQueue(wavefrontDepth);
+                        Do(
+                            "Update indirect ray stats", PBRT_CPU_GPU_LAMBDA() {
+                                stats->indirectRays[wavefrontDepth] += statsQueue->Size();
+                            });
+                    }
+
+                    sampleStageIndex = 3;
+                    SampleMediumInteraction(wavefrontDepth);
+
+                    sampleStageIndex = 4;
+                    HandleEscapedRays();
+
+                    sampleStageIndex = 5;
+                    HandleEmissiveIntersection();
+
+                    if (wavefrontDepth == maxDepth)
+                        break;
+
+                    sampleStageIndex = 6;
+                    EvaluateMaterialsAndBSDFs(wavefrontDepth, cameraMotion);
+
+                    // Do immediately so that we have space for shadow rays for
+                    // subsurface..
+                    sampleStageIndex = 7;
+                    TraceShadowRays(wavefrontDepth);
+
+                    sampleStageIndex = 8;
+                    SampleSubsurface(wavefrontDepth);
+
+                    if (wavefrontDepth == 0)
+                        SaveDirectLightContribution();
+                }
+                UpdateFilm();
+            }
+
+            // Copy updated film pixels to buffer for the display server.
+            if (Options->useGPU && !Options->displayServer.empty())
+                UpdateDisplayRGBFromFilm(pixelBounds);
+
+            progress.Update();
+        }
+
+        if (gui) {
+            RGB *rgb = gui->MapFramebuffer();
+            UpdateFramebufferFromFilm(pixelBounds, gui->exposure, rgb);
+            gui->UnmapFramebuffer();
+
+            if (gui->printCameraTransform) {
+                SquareMatrix<4> cfw =
+                    (Inverse(gui->GetCameraTransform()) * cameraFromWorld).GetMatrix();
+                Printf("Current camera transform:\nTransform [ ");
+                for (int i = 0; i < 16; ++i)
+                    Printf("%f ", cfw[i % 4][i / 4]);
+                Printf("]\n");
+                std::fflush(stdout);
+                gui->printCameraTransform = false;
+            }
+
+            DisplayState state = gui->RefreshDisplay();
+            if (state == DisplayState::EXIT)
+                break;
+            else if (state == DisplayState::RESET) {
+                sampleIndex = firstSampleIndex - 1;
+                ParallelFor(
+                    "Reset pixels", resolution.x * resolution.y,
+                    PBRT_CPU_GPU_LAMBDA(int i) {
+                        int x = i % resolution.x, y = i / resolution.x;
+                        film.ResetPixel(pixelBounds.pMin + Vector2i(x, y));
+                    });
+            }
+        }
+    }
+
+    if (gui) {
+        delete gui;
+        gui = nullptr;
+    }
+
+    progress.Done();
+
+#ifdef PBRT_BUILD_GPU_RENDERER
+    if (Options->useGPU)
+        GPUWait();
+#endif  // PBRT_BUILD_GPU_RENDERER
+    Float seconds = timer.ElapsedSeconds();
+
+    // Shut down display server thread, if active
+    StopDisplayThread();
+
+    return seconds;
+}
+
+void ReSTIRDIWavefrontPathIntegrator::SaveDirectLightContribution() {
+    ParallelFor(
+        "Save Direct Light Contribution", maxQueueSize,
+        PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
+            SampledSpectrum L = SampledSpectrum(pixelSampleState.L[pixelIndex]);
+            pixelSampleState.DirectL[pixelIndex] = L;
+        });
+}
+
+void ReSTIRDIWavefrontPathIntegrator::DirectLight() {
+    ParallelFor(
+        "Save Direct Light Contribution", maxQueueSize,
+        PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
+            Float u = sampler.Get1D();
+            pstd::optional<SampledLight> sampledLight = lightSampler.Sample(u);
+            
+            SampledSpectrum L = SampledSpectrum(pixelSampleState.L[pixelIndex]);
+            pixelSampleState.DirectL[pixelIndex] = L;
+        });
+}
+
 }  // namespace pbrt
+

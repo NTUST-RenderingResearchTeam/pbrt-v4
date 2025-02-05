@@ -12,7 +12,7 @@
 namespace pbrt {
 
 void RenderWavefront(BasicScene &scene) {
-    WavefrontPathIntegrator *integrator = nullptr;
+    ReSTIRDIWavefrontPathIntegrator *integrator = nullptr;
 
 #ifdef PBRT_BUILD_GPU_RENDERER
     if (Options->useGPU) {
@@ -24,7 +24,7 @@ void RenderWavefront(BasicScene &scene) {
         // turn, the lambda capture for GPU kernels has to capture *this by
         // value (see the definition of PBRT_CPU_GPU_LAMBDA in pbrt/pbrt.h.).
         integrator =
-            new WavefrontPathIntegrator(&CUDATrackedMemoryResource::singleton, scene);
+            new ReSTIRDIWavefrontPathIntegrator(&CUDATrackedMemoryResource::singleton, scene);
 #else
         // With more capable unified memory, the WavefrontPathIntegrator can live in
         // unified memory.  Some cudaMemAdvise calls, to come shortly, let us
@@ -36,7 +36,7 @@ void RenderWavefront(BasicScene &scene) {
     } else
 #endif  // PBRT_BUILD_GPU_RENDERER
         integrator =
-            new WavefrontPathIntegrator(pstd::pmr::get_default_resource(), scene);
+            new ReSTIRDIWavefrontPathIntegrator(pstd::pmr::get_default_resource(), scene);
 
     ///////////////////////////////////////////////////////////////////////////
     // Render!

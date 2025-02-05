@@ -85,6 +85,7 @@ class WavefrontPathIntegrator {
 
     void UpdateFilm();
 
+    WavefrontPathIntegrator() {};
     WavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
                             BasicScene &scene);
 
@@ -187,6 +188,19 @@ class WavefrontPathIntegrator {
     RGB *displayRGB = nullptr, *displayRGBHost = nullptr;
     std::atomic<bool> *exitCopyThread;
     std::thread *copyThread;
+};
+
+class ReSTIRDIWavefrontPathIntegrator : public WavefrontPathIntegrator {
+  public:
+    ReSTIRDIWavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
+                            BasicScene &scene);
+
+    Float Render();
+
+    void SaveDirectLightContribution();
+
+    void DirectLight();
+
 };
 
 }  // namespace pbrt
