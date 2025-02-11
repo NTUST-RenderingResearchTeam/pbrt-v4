@@ -70,7 +70,6 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
     ForAllQueued(
         desc.c_str(), queue, maxQueueSize,
         PBRT_CPU_GPU_LAMBDA(const MaterialEvalWorkItem<ConcreteMaterial> w) {
-            LOG_VERBOSE("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
             // Evaluate material and BSDF for ray intersection
             TextureEvaluator texEval;
             // Compute differentials for position and $(u,v)$ at intersection point
@@ -263,9 +262,7 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
 
             // Sample light and enqueue shadow ray at intersection point
             BxDFFlags flags = bsdf.Flags();
-            LOG_VERBOSE("A");
             if (IsNonSpecular(flags)) {
-                LOG_VERBOSE("B");
                 // Choose a light source using the _LightSampler_
                 LightSampleContext ctx(w.pi, w.n, ns);
                 if (IsReflective(flags) && !IsTransmissive(flags))
@@ -287,7 +284,6 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
                 SampledSpectrum f = bsdf.f<ConcreteBxDF>(wo, wi);
                 if (!f)
                     return;
-                LOG_VERBOSE("C");
                 
 
 
@@ -328,20 +324,42 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
                 DIReservoir localLight;
                 localLight.targetPdf = target_p;
                 localLight.uv = raySamples.direct.u;
-                //////localLight.sampledLight = sampledLight;
                 localLight.ls = ls;
                 localLight.W = Ld.Average();
                 ////
+                
+                // 將浮點數轉換為整數表示
+                union {
+                    float f;
+                    uint32_t i;
+                } u;
+                Float seed = w.time + w.pixelIndex + w.depth + w.n.x + w.n.y + w.n.z + w.wo.x + w.wo.y + w.wo.z;
+                u.f = seed;
+
+                // 簡單的整數雜湊函數
+                uint32_t hash = u.i;
+                hash = ((hash >> 16) ^ hash) * 0x45d9f3b;
+                hash = ((hash >> 16) ^ hash) * 0x45d9f3b;
+                hash = (hash >> 16) ^ hash;
+
+                // 轉換到 0-1 範圍
+                Float rng = static_cast<float>(hash) / static_cast<float>(UINT32_MAX);
+                //std::string s =
+                    //"time:" + std::to_string(w.time) + " rng:" + std::to_string(rng);
+                //LOG_VERBOSE(s.c_str());
+                
+                PBRT_DBG("time: %f,  rng: %f\n", w.time, rng);
+                
                 DIReservoir dstReservoir = pixelSampleState.diReservoir[w.pixelIndex];
-                dstReservoir.combineReservoir(localLight, sampler);
-                pixelSampleState.diReservoir[w.pixelIndex] = dstReservoir;
+                dstReservoir.combineReservoir(localLight, 0.5);
+                /*pixelSampleState.diReservoir[w.pixelIndex] = dstReservoir;
                 LOG_VERBOSE("pixel index: %d, target:%f, w:%f, m:%f, sumW:%f",
                             w.pixelIndex, dstReservoir.targetPdf, dstReservoir.W,
-                            dstReservoir.M, dstReservoir.weightSum);
+                            dstReservoir.M, dstReservoir.weightSum);*/
                 Ray ray;
-                if (dstReservoir.W > 0 && dstReservoir.ls)
+                /*if (dstReservoir.W > 0 && dstReservoir.ls)
                     ray = SpawnRayTo(w.pi, w.n, w.time, dstReservoir.ls->pLight.pi, dstReservoir.ls->pLight.n);
-                else
+                else*/
                     ray = SpawnRayTo(w.pi, w.n, w.time, ls->pLight.pi, ls->pLight.n);
                 // Initialize _ray_ medium if media are present
                 if (haveMedia)

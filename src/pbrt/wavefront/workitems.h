@@ -37,11 +37,11 @@ struct DIReservoir {
     int age = 0;
 
     PBRT_CPU_GPU
-    void combineReservoir(const DIReservoir &src, Sampler &sampler);
+    void combineReservoir(const DIReservoir &src, Float rng);
 };
 
 PBRT_CPU_GPU 
-void inline DIReservoir::combineReservoir(const DIReservoir& src, Sampler& sampler)
+void inline DIReservoir::combineReservoir(const DIReservoir& src, Float rng)
 {
     LOG_VERBOSE("Start combine reservoir");
     float risWeight = src.targetPdf * src.W * src.M;
@@ -50,7 +50,6 @@ void inline DIReservoir::combineReservoir(const DIReservoir& src, Sampler& sampl
     M = M + src.M;
     weightSum += risWeight;
 
-    Float rng = sampler.Get1D();
 
     if (W < src.W){
         PBRT_DBG("new combine");
