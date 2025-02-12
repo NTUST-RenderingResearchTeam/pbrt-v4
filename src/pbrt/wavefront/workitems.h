@@ -38,22 +38,27 @@ struct DIReservoir {
 
     PBRT_CPU_GPU
     void combineReservoir(const DIReservoir &src, Float rng);
+
+    PBRT_CPU_GPU
+    void update(const pstd::optional<LightLiSample> &lightSample, Float rng,
+                Float weight, Float targetPDF);
 };
 
 PBRT_CPU_GPU 
 void inline DIReservoir::combineReservoir(const DIReservoir& src, Float rng)
 {
     LOG_VERBOSE("Start combine reservoir");
-    float risWeight = src.targetPdf * src.W * src.M;
-    // float risWeight = src.weightSum;
+    float UCW = src.targetPdf * (src.W / src.weightSum);
+    float misWeight = src.M / (src.M + M); 
+    float risWeight = misWeight * UCW;
+    LOG_VERBOSE("UCW:%f MIS Weight:%f RIS Weight:%f", UCW, misWeight, risWeight);
 
     M = M + src.M;
     weightSum += risWeight;
 
-
-    if (W < src.W){
+    if (risWeight < rng){
         PBRT_DBG("new combine");
-        W = src.W;
+        W = risWeight;
         targetPdf = src.targetPdf;
         visibility = src.visibility;
         isVisCheck = src.isVisCheck;
@@ -67,6 +72,22 @@ void inline DIReservoir::combineReservoir(const DIReservoir& src, Float rng)
         spatialDistance = src.spatialDistance;
         age = src.age;
         age++;
+    }
+}
+
+inline void DIReservoir::update(const pstd::optional<LightLiSample> &lightSample,
+                                Float rng, Float weight, Float targetPDF) {
+    weightSum += weight;
+    M += 1;
+
+    if (rng < weight / weightSum) {
+        ls = lightSample;
+    }
+
+    if (M > 0 && targetPDF > 0.f) {
+        W = (weightSum / M) / targetPDF;
+    } else {
+        W = 0.f;
     }
 }
 
@@ -322,6 +343,7 @@ struct PixelSampleState {
     RaySamples samples;
     SampledSpectrum DirectL;
     DIReservoir diReservoir;
+    //Float shadowRayCount;
 };
 
 // RayWorkItem Definition

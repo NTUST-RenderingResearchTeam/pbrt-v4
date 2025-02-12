@@ -319,47 +319,66 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
 
                 ////// RIS f(x)
                 SampledSpectrum w_ld = ClampZero(ls->L) * f;
-                target_p += w_ld.Average();// w_ld.ToLuminance(pixelSampleState.lambda[w.pixelIndex]);
-
-                DIReservoir localLight;
-                localLight.targetPdf = target_p;
-                localLight.uv = raySamples.direct.u;
-                localLight.ls = ls;
-                localLight.W = Ld.Average();
-                ////
+                //target_p += w_ld.ToLuminance(lambda);
+                //target_p += w_ld.Average();
                 
-                // 將浮點數轉換為整數表示
-                union {
-                    float f;
-                    uint32_t i;
-                } u;
-                Float seed = w.time + w.pixelIndex + w.depth + w.n.x + w.n.y + w.n.z + w.wo.x + w.wo.y + w.wo.z;
-                u.f = seed;
+                auto spectrumToLuminance = [](SampledSpectrum ss, SampledWavelengths lambda) {
+                    XYZ xyz = ss.ToXYZ(lambda);
+                    constexpr double matrix[3][3] = {{3.2406, -1.5372, -0.4986},
+                                                     {-0.9689, 1.8758, 0.0415},
+                                                     {0.0557, -0.2040, 1.0570}};
+                    double linear_r = matrix[0][0] * xyz.X + matrix[0][1] * xyz.Y +
+                                      matrix[0][2] * xyz.Z;
+                    double linear_g = matrix[1][0] * xyz.X + matrix[1][1] * xyz.Y +
+                                      matrix[1][2] * xyz.Z;
+                    double linear_b = matrix[2][0] * xyz.X + matrix[2][1] * xyz.Y +
+                                      matrix[2][2] * xyz.Z;
+                    RGB rgb(linear_r, linear_g, linear_b);
+                    //RGB rgb = RGBColorSpace_sRGB->ToRGB(xyz);
+                    rgb = ClampZero(rgb);
+                    float l = rgb.r * 0.299f + rgb.g * 0.587f + rgb.b * 0.114f;
+                    return l;
+                };
 
-                // 簡單的整數雜湊函數
-                uint32_t hash = u.i;
-                hash = ((hash >> 16) ^ hash) * 0x45d9f3b;
-                hash = ((hash >> 16) ^ hash) * 0x45d9f3b;
-                hash = (hash >> 16) ^ hash;
+                auto rng1D = [](Float seed) {
+                    // 將浮點數轉換為整數表示
+                    union {
+                        float f;
+                        uint32_t i;
+                    } u;
+                    u.f = seed;
 
-                // 轉換到 0-1 範圍
-                Float rng = static_cast<float>(hash) / static_cast<float>(UINT32_MAX);
-                //std::string s =
-                    //"time:" + std::to_string(w.time) + " rng:" + std::to_string(rng);
-                //LOG_VERBOSE(s.c_str());
-                
-                PBRT_DBG("time: %f,  rng: %f\n", w.time, rng);
-                
+                    // 簡單的整數雜湊函數
+                    uint32_t hash = u.i;
+                    hash = ((hash >> 16) ^ hash) * 0x45d9f3b;
+                    hash = ((hash >> 16) ^ hash) * 0x45d9f3b;
+                    hash = (hash >> 16) ^ hash;
+
+                    // 轉換到 0-1 範圍
+                    Float rng = static_cast<float>(hash) / static_cast<float>(UINT32_MAX);
+                    return rng;
+                };
+                target_p = spectrumToLuminance(w_ld, lambda);
+
+
                 DIReservoir dstReservoir = pixelSampleState.diReservoir[w.pixelIndex];
-                dstReservoir.combineReservoir(localLight, 0.5);
-                /*pixelSampleState.diReservoir[w.pixelIndex] = dstReservoir;
-                LOG_VERBOSE("pixel index: %d, target:%f, w:%f, m:%f, sumW:%f",
-                            w.pixelIndex, dstReservoir.targetPdf, dstReservoir.W,
-                            dstReservoir.M, dstReservoir.weightSum);*/
+                float curWeight = spectrumToLuminance(Ld, lambda);
+                float curM = dstReservoir.M;
+                float curWeightSum = dstReservoir.weightSum;
+                float chooseRate = curWeight / curWeightSum;
+                
+                Float seed1 = w.time + w.pixelIndex + w.depth + w.n.x +
+                                           w.n.y + w.n.z + w.wo.x + w.wo.y + w.wo.z;
+                Float rng = rng1D(seed1);
+                dstReservoir.update(ls, rng, curWeight, target_p);
+                pixelSampleState.diReservoir[w.pixelIndex] = dstReservoir;
+
+                LOG_VERBOSE("before pixel index: %d, rng: %f, rate: %f, curWeight: %f, curWeightSum: %f, curM: %f, after M: %f",
+                        w.pixelIndex, rng, chooseRate, curWeight, curWeightSum, curM, dstReservoir.M);
                 Ray ray;
-                /*if (dstReservoir.W > 0 && dstReservoir.ls)
+                if (dstReservoir.ls)
                     ray = SpawnRayTo(w.pi, w.n, w.time, dstReservoir.ls->pLight.pi, dstReservoir.ls->pLight.n);
-                else*/
+                else
                     ray = SpawnRayTo(w.pi, w.n, w.time, ls->pLight.pi, ls->pLight.n);
                 // Initialize _ray_ medium if media are present
                 if (haveMedia)

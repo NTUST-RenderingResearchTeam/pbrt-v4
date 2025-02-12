@@ -197,6 +197,8 @@ class ReSTIRDIWavefrontPathIntegrator : public WavefrontPathIntegrator {
 
     Float Render();
 
+    void ResetDIReservoir();
+
     void SaveDirectLightContribution();
 
     void DirectLight();

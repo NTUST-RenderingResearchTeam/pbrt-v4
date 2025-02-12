@@ -1028,7 +1028,7 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
 
     ProgressReporter progress(lastSampleIndex - firstSampleIndex, "Rendering",
                               Options->quiet || Options->interactive, Options->useGPU);
-
+    ResetDIReservoir();
     int sampleStageIndex;
     for (int sampleIndex = firstSampleIndex; sampleIndex < lastSampleIndex || gui;
          ++sampleIndex) {
@@ -1144,7 +1144,8 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
                     if (wavefrontDepth == 0)
                         SaveDirectLightContribution();
                 }
-                UpdateFilm();
+                if (lastSampleIndex - sampleIndex <= 2)
+                    UpdateFilm();
             }
 
             // Copy updated film pixels to buffer for the display server.
@@ -1184,7 +1185,8 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
             }
         }
     }
-
+    
+    
     if (gui) {
         delete gui;
         gui = nullptr;
@@ -1197,11 +1199,31 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
         GPUWait();
 #endif  // PBRT_BUILD_GPU_RENDERER
     Float seconds = timer.ElapsedSeconds();
+    GPUWait();
+    int nonZeroCount = 0;
+    for (int i = 0; i < maxQueueSize; i++) {
+        DIReservoir reservoir = pixelSampleState.diReservoir[i];
+        if (reservoir.M > 0)
+            nonZeroCount++;
+        LOG_VERBOSE("At pixel %d, M is %f", i, reservoir.M);
+    }
+    LOG_VERBOSE("Total pixel %d", maxQueueSize);
+    LOG_VERBOSE("zero count %d", maxQueueSize - nonZeroCount);
+    LOG_VERBOSE("non zero count %d", nonZeroCount);
+
 
     // Shut down display server thread, if active
     StopDisplayThread();
 
     return seconds;
+}
+
+void ReSTIRDIWavefrontPathIntegrator::ResetDIReservoir() {
+    ParallelFor(
+        "Reset DI Reservoir", maxQueueSize,
+        PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
+            pixelSampleState.diReservoir[pixelIndex] = DIReservoir();
+        });
 }
 
 void ReSTIRDIWavefrontPathIntegrator::SaveDirectLightContribution() {
