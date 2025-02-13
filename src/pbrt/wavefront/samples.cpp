@@ -49,6 +49,14 @@ void WavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth, int sampleI
             RaySamples rs;
             rs.direct.uc = pixelSampler.Get1D();
             rs.direct.u = pixelSampler.Get2D();
+            rs.direct1.uc = pixelSampler.Get1D();
+            rs.direct1.u = pixelSampler.Get2D();
+            rs.direct2.uc = pixelSampler.Get1D();
+            rs.direct2.u = pixelSampler.Get2D();
+            rs.direct3.uc = pixelSampler.Get1D();
+            rs.direct3.u = pixelSampler.Get2D();
+            rs.direct4.uc = pixelSampler.Get1D();
+            rs.direct4.u = pixelSampler.Get2D();
             // Initialize remaining samples in _rs_
             rs.indirect.uc = pixelSampler.Get1D();
             rs.indirect.u = pixelSampler.Get2D();

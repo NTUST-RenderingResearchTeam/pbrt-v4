@@ -38,6 +38,10 @@ soa PixelSampleState {
     RaySamples samples;
     SampledSpectrum DirectL;
     DIReservoir diReservoir;
+    Float shadowRayCount;
+    Float exitAt1;
+    Float exitAt2;
+    Float exitAt3;
 };
 
 soa RayWorkItem {

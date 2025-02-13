@@ -25,23 +25,24 @@ struct DIReservoir {
     //pstd::optional<SampledLight> sampledLight = {};
 
     pstd::optional<LightLiSample> ls = {};
-    Point2f uv;
+    Float sampledLightP = 0.f;
+    Float weightSum = 0.f;
+    Float W = 0.f;
+    int M = 0;
 
+    Point2f uv;
     bool visibility = true;
     bool isVisCheck = false;
     Float targetPdf = 0.f;
-    Float weightSum = 0.f;
-    Float W = 0.f;
     Point2i spatialDistance = Point2i(0, 0);
-    int M = 0;
     int age = 0;
 
     PBRT_CPU_GPU
     void combineReservoir(const DIReservoir &src, Float rng);
 
     PBRT_CPU_GPU
-    void update(const pstd::optional<LightLiSample> &lightSample, Float rng,
-                Float weight, Float targetPDF);
+    void update(const pstd::optional<LightLiSample> &lightSample, Float rng, Float weight,
+                Float targetPDF, Float sampledLightP);
 };
 
 PBRT_CPU_GPU 
@@ -76,12 +77,14 @@ void inline DIReservoir::combineReservoir(const DIReservoir& src, Float rng)
 }
 
 inline void DIReservoir::update(const pstd::optional<LightLiSample> &lightSample,
-                                Float rng, Float weight, Float targetPDF) {
+                                Float rng, Float weight, Float targetPDF,
+                                Float _sampledLightP) {
     weightSum += weight;
     M += 1;
 
     if (rng < weight / weightSum) {
         ls = lightSample;
+        sampledLightP = _sampledLightP;
     }
 
     if (M > 0 && targetPDF > 0.f) {
@@ -99,6 +102,7 @@ struct SOA<DIReservoir> {
         // Basic Float members
         targetPdf = alloc.allocate_object<Float>(size);
         weightSum = alloc.allocate_object<Float>(size);
+        sampledLightP = alloc.allocate_object<Float>(size);
         W = alloc.allocate_object<Float>(size);
         M = alloc.allocate_object<Float>(size);           // Store int as Float
         age = alloc.allocate_object<Float>(size);         // Store int as Float
@@ -127,6 +131,7 @@ struct SOA<DIReservoir> {
         // Basic members
         res.targetPdf = targetPdf[i];
         res.weightSum = weightSum[i];
+        res.sampledLightP = sampledLightP[i];
         res.W = W[i];
         res.M = int(M[i]);
         res.age = int(age[i]);
@@ -181,6 +186,7 @@ struct SOA<DIReservoir> {
             // Basic members
             soa->targetPdf[index] = res.targetPdf;
             soa->weightSum[index] = res.weightSum;
+            soa->sampledLightP[index] = res.sampledLightP;
             soa->W[index] = res.W;
             soa->M[index] = Float(res.M);
             soa->age[index] = Float(res.age);
@@ -226,6 +232,7 @@ struct SOA<DIReservoir> {
     // Basic members
     Float *PBRT_RESTRICT targetPdf;
     Float *PBRT_RESTRICT weightSum;
+    Float *PBRT_RESTRICT sampledLightP;
     Float *PBRT_RESTRICT W;
     Float *PBRT_RESTRICT M;
     Float *PBRT_RESTRICT age;
@@ -255,6 +262,22 @@ struct RaySamples {
         Float uc;
     } direct;
     struct {
+        Point2f u;
+        Float uc;
+    } direct1;
+    struct {
+        Point2f u;
+        Float uc;
+    } direct2;
+    struct {
+        Point2f u;
+        Float uc;
+    } direct3;
+    struct {
+        Point2f u;
+        Float uc;
+    } direct4;
+    struct {
         Float uc, rr;
         Point2f u;
     } indirect;
@@ -272,6 +295,10 @@ struct SOA<RaySamples> {
 
     SOA(int size, Allocator alloc) {
         direct = alloc.allocate_object<Float4>(size);
+        direct1 = alloc.allocate_object<Float4>(size);
+        direct2 = alloc.allocate_object<Float4>(size);
+        direct3 = alloc.allocate_object<Float4>(size);
+        direct4 = alloc.allocate_object<Float4>(size);
         indirect = alloc.allocate_object<Float4>(size);
         subsurface = alloc.allocate_object<Float4>(size);
         mediaDist = alloc.allocate_object<Float>(size);
@@ -286,6 +313,19 @@ struct SOA<RaySamples> {
         rs.direct.uc = dir.v[2];
 
         rs.haveSubsurface = int(dir.v[3]) & 1;
+
+        Float4 dir1 = Load4(direct1 + i);
+        rs.direct1.u = Point2f(dir1.v[0], dir1.v[1]);
+        rs.direct1.uc = dir1.v[2];
+        Float4 dir2 = Load4(direct2 + i);
+        rs.direct2.u = Point2f(dir2.v[0], dir2.v[1]);
+        rs.direct2.uc = dir2.v[2];
+        Float4 dir3 = Load4(direct3 + i);
+        rs.direct3.u = Point2f(dir3.v[0], dir3.v[1]);
+        rs.direct3.uc = dir3.v[2];
+        Float4 dir4 = Load4(direct4 + i);
+        rs.direct4.u = Point2f(dir4.v[0], dir4.v[1]);
+        rs.direct4.uc = dir4.v[2];
 
         Float4 ind = Load4(indirect + i);
         rs.indirect.uc = ind.v[0];
@@ -310,6 +350,14 @@ struct SOA<RaySamples> {
             int flags = rs.haveSubsurface ? 1 : 0;
             soa->direct[index] =
                 Float4{rs.direct.u[0], rs.direct.u[1], rs.direct.uc, Float(flags)};
+            soa->direct1[index] =
+                Float4{rs.direct1.u[0], rs.direct1.u[1], rs.direct1.uc, 0};
+            soa->direct2[index] =
+                Float4{rs.direct2.u[0], rs.direct2.u[1], rs.direct2.uc, 0};
+            soa->direct3[index] =
+                Float4{rs.direct3.u[0], rs.direct3.u[1], rs.direct3.uc, 0};
+            soa->direct4[index] =
+                Float4{rs.direct4.u[0], rs.direct4.u[1], rs.direct4.uc, 0};
             soa->indirect[index] = Float4{rs.indirect.uc, rs.indirect.rr,
                                           rs.indirect.u[0], rs.indirect.u[1]};
             if (rs.haveSubsurface)
@@ -326,6 +374,10 @@ struct SOA<RaySamples> {
 
   private:
     Float4 *PBRT_RESTRICT direct;
+    Float4 *PBRT_RESTRICT direct1;
+    Float4 *PBRT_RESTRICT direct2;
+    Float4 *PBRT_RESTRICT direct3;
+    Float4 *PBRT_RESTRICT direct4;
     Float4 *PBRT_RESTRICT indirect;
     Float4 *PBRT_RESTRICT subsurface;
     Float *PBRT_RESTRICT mediaDist, *PBRT_RESTRICT mediaMode;
@@ -343,7 +395,10 @@ struct PixelSampleState {
     RaySamples samples;
     SampledSpectrum DirectL;
     DIReservoir diReservoir;
-    //Float shadowRayCount;
+    Float shadowRayCount;
+    Float exitAt1;
+    Float exitAt2;
+    Float exitAt3;
 };
 
 // RayWorkItem Definition

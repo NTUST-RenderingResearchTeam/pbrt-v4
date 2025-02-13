@@ -1141,8 +1141,8 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
                     sampleStageIndex = 8;
                     SampleSubsurface(wavefrontDepth);
 
-                    if (wavefrontDepth == 0)
-                        SaveDirectLightContribution();
+                    //if (wavefrontDepth == 0)
+                    //    SaveDirectLightContribution();
                 }
                 if (lastSampleIndex - sampleIndex <= 2)
                     UpdateFilm();
@@ -1199,18 +1199,34 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
         GPUWait();
 #endif  // PBRT_BUILD_GPU_RENDERER
     Float seconds = timer.ElapsedSeconds();
-    GPUWait();
     int nonZeroCount = 0;
+    int nonZeroShadowrayCount = 0;
+    int exitAt1Count = 0;
+    int exitAt2Count = 0;
+    int exitAt3Count = 0;
     for (int i = 0; i < maxQueueSize; i++) {
         DIReservoir reservoir = pixelSampleState.diReservoir[i];
+        Float shadowrayCount = pixelSampleState.shadowRayCount[i];
+        Float exitAt1 = pixelSampleState.exitAt1[i];
+        Float exitAt2 = pixelSampleState.exitAt2[i];
+        Float exitAt3 = pixelSampleState.exitAt3[i];
         if (reservoir.M > 0)
             nonZeroCount++;
-        LOG_VERBOSE("At pixel %d, M is %f", i, reservoir.M);
+        if (shadowrayCount > 0)
+            nonZeroShadowrayCount++;
+        exitAt1Count += exitAt1;
+        exitAt2Count += exitAt2;
+        exitAt3Count += exitAt3;
+        LOG_VERBOSE("At pixel %d, M is %f, shadowray count is %f, exit at 1 %f, exit at 2 %f, exit at 3 %f", i, reservoir.M, shadowrayCount, exitAt1, exitAt2, exitAt3);
     }
     LOG_VERBOSE("Total pixel %d", maxQueueSize);
     LOG_VERBOSE("zero count %d", maxQueueSize - nonZeroCount);
     LOG_VERBOSE("non zero count %d", nonZeroCount);
-
+    LOG_VERBOSE("zero shadow ray count %d", maxQueueSize - nonZeroShadowrayCount);
+    LOG_VERBOSE("non zero shadow ray count %d", nonZeroShadowrayCount);
+    LOG_VERBOSE("Total exit at 1 %d", exitAt1Count);
+    LOG_VERBOSE("Total exit at 2 %d", exitAt2Count);
+    LOG_VERBOSE("Total exit at 3 %d", exitAt3Count);
 
     // Shut down display server thread, if active
     StopDisplayThread();
@@ -1223,6 +1239,10 @@ void ReSTIRDIWavefrontPathIntegrator::ResetDIReservoir() {
         "Reset DI Reservoir", maxQueueSize,
         PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
             pixelSampleState.diReservoir[pixelIndex] = DIReservoir();
+            pixelSampleState.shadowRayCount[pixelIndex] = 0;
+            pixelSampleState.exitAt1[pixelIndex] = 0;
+            pixelSampleState.exitAt2[pixelIndex] = 0;
+            pixelSampleState.exitAt3[pixelIndex] = 0;
         });
 }
 
