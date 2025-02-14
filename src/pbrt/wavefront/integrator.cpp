@@ -928,10 +928,12 @@ ReSTIRDIWavefrontPathIntegrator::ReSTIRDIWavefrontPathIntegrator(
     int nPasses = (resolution.y + scanlinesPerPass - 1) / scanlinesPerPass;
     scanlinesPerPass = (resolution.y + nPasses - 1) / nPasses;
     maxQueueSize = resolution.x * scanlinesPerPass;
+    totalPixelNumber = resolution.x * resolution.y;
     LOG_VERBOSE("Will render in %d passes %d scanlines per pass\n", nPasses,
                 scanlinesPerPass);
 
     pixelSampleState = SOA<PixelSampleState>(maxQueueSize, alloc);
+    imageState = SOA<ImageState>(totalPixelNumber, alloc);
 
     rayQueues[0] = alloc.new_object<RayQueue>(maxQueueSize, alloc);
     rayQueues[1] = alloc.new_object<RayQueue>(maxQueueSize, alloc);
@@ -1205,19 +1207,22 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
     int exitAt2Count = 0;
     int exitAt3Count = 0;
     for (int i = 0; i < maxQueueSize; i++) {
-        DIReservoir reservoir = pixelSampleState.diReservoir[i];
         Float shadowrayCount = pixelSampleState.shadowRayCount[i];
         Float exitAt1 = pixelSampleState.exitAt1[i];
         Float exitAt2 = pixelSampleState.exitAt2[i];
         Float exitAt3 = pixelSampleState.exitAt3[i];
-        if (reservoir.M > 0)
-            nonZeroCount++;
         if (shadowrayCount > 0)
             nonZeroShadowrayCount++;
         exitAt1Count += exitAt1;
         exitAt2Count += exitAt2;
         exitAt3Count += exitAt3;
-        LOG_VERBOSE("At pixel %d, M is %f, shadowray count is %f, exit at 1 %f, exit at 2 %f, exit at 3 %f", i, reservoir.M, shadowrayCount, exitAt1, exitAt2, exitAt3);
+        //LOG_VERBOSE("At pixel %d, shadowray count is %f, exit at 1 %f, exit at 2 %f, exit at 3 %f", i, shadowrayCount, exitAt1, exitAt2, exitAt3);
+    }
+    for (int i = 0; i < totalPixelNumber; ++i)
+    {
+        DIReservoir reservoir = imageState.diReservoir[i];
+        if (reservoir.M > 0)
+            nonZeroCount++;
     }
     LOG_VERBOSE("Total pixel %d", maxQueueSize);
     LOG_VERBOSE("zero count %d", maxQueueSize - nonZeroCount);
@@ -1236,9 +1241,12 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
 
 void ReSTIRDIWavefrontPathIntegrator::ResetDIReservoir() {
     ParallelFor(
+        "Reset DI Reservoir", totalPixelNumber, PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
+            imageState.diReservoir[pixelIndex] = DIReservoir();
+        });
+    ParallelFor(
         "Reset DI Reservoir", maxQueueSize,
         PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
-            pixelSampleState.diReservoir[pixelIndex] = DIReservoir();
             pixelSampleState.shadowRayCount[pixelIndex] = 0;
             pixelSampleState.exitAt1[pixelIndex] = 0;
             pixelSampleState.exitAt2[pixelIndex] = 0;

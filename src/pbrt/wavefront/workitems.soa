@@ -28,6 +28,10 @@ soa Vector3f;
 soa VisibleSurface;
 soa DIReservoir;
 
+soa ImageState {
+    DIReservoir diReservoir;
+};
+
 soa PixelSampleState {
     Float filterWeight;
     Point2i pPixel;
@@ -37,7 +41,6 @@ soa PixelSampleState {
     VisibleSurface visibleSurface;
     RaySamples samples;
     SampledSpectrum DirectL;
-    DIReservoir diReservoir;
     Float shadowRayCount;
     Float exitAt1;
     Float exitAt2;

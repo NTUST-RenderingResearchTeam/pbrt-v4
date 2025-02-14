@@ -383,6 +383,10 @@ struct SOA<RaySamples> {
     Float *PBRT_RESTRICT mediaDist, *PBRT_RESTRICT mediaMode;
 };
 
+struct ImageState {
+    DIReservoir diReservoir;
+};
+
 // PixelSampleState Definition
 struct PixelSampleState {
     // PixelSampleState Public Members
@@ -394,7 +398,6 @@ struct PixelSampleState {
     SampledSpectrum cameraRayWeight;
     RaySamples samples;
     SampledSpectrum DirectL;
-    DIReservoir diReservoir;
     Float shadowRayCount;
     Float exitAt1;
     Float exitAt2;

@@ -76,11 +76,13 @@ class WavefrontPathIntegrator {
     void HandleEscapedRays();
     void HandleEmissiveIntersection();
 
-    void EvaluateMaterialsAndBSDFs(int wavefrontDepth, Transform movingFromCamera);
+    
+    virtual void EvaluateMaterialsAndBSDFs(int wavefrontDepth, Transform movingFromCamera);
     template <typename ConcreteMaterial>
     void EvaluateMaterialAndBSDF(int wavefrontDepth, Transform movingFromCamera);
     template <typename ConcreteMaterial, typename TextureEvaluator>
-    void EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQueue, Transform movingFromCamera,
+    void EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQueue,
+                                        Transform movingFromCamera,
                                  int wavefrontDepth);
 
     void UpdateFilm();
@@ -190,12 +192,17 @@ class WavefrontPathIntegrator {
     std::thread *copyThread;
 };
 
-class ReSTIRDIWavefrontPathIntegrator : public WavefrontPathIntegrator {
+class ReSTIRDIWavefrontPathIntegrator : public WavefrontPathIntegrator{
   public:
-    ReSTIRDIWavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
-                            BasicScene &scene);
-
+    
     Float Render();
+
+    void EvaluateMaterialsAndBSDFs(int wavefrontDepth, Transform movingFromCamera);
+    template <typename ConcreteMaterial>
+    void EvaluateMaterialAndBSDF(int wavefrontDepth, Transform movingFromCamera);
+    template <typename ConcreteMaterial, typename TextureEvaluator>
+    void EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQueue, Transform movingFromCamera,
+                                 int wavefrontDepth);
 
     void ResetDIReservoir();
 
@@ -203,6 +210,13 @@ class ReSTIRDIWavefrontPathIntegrator : public WavefrontPathIntegrator {
 
     void DirectLight();
 
+    ReSTIRDIWavefrontPathIntegrator() {};
+    ReSTIRDIWavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
+                                    BasicScene &scene);
+
+    int totalPixelNumber;
+
+    SOA<ImageState> imageState;
 };
 
 }  // namespace pbrt
