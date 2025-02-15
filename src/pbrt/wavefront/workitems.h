@@ -29,6 +29,9 @@ struct DIReservoir {
     Float weightSum = 0.f;
     Float W = 0.f;
     int M = 0;
+    // Check reuse correleation
+    Normal3f normal;
+    Float depth;
 
     Point2f uv;
     bool visibility = true;
@@ -42,7 +45,7 @@ struct DIReservoir {
 
     PBRT_CPU_GPU
     void update(const pstd::optional<LightLiSample> &lightSample, Float rng, Float weight,
-                Float targetPDF, Float sampledLightP);
+                Float targetPDF, Float sampledLightP, Normal3f normal, Float depth);
 };
 
 PBRT_CPU_GPU 
@@ -78,13 +81,15 @@ void inline DIReservoir::combineReservoir(const DIReservoir& src, Float rng)
 
 inline void DIReservoir::update(const pstd::optional<LightLiSample> &lightSample,
                                 Float rng, Float weight, Float targetPDF,
-                                Float _sampledLightP) {
+                                Float _sampledLightP, Normal3f _normal, Float _depth) {
     weightSum += weight;
     M += 1;
 
     if (rng < weight / weightSum) {
         ls = lightSample;
         sampledLightP = _sampledLightP;
+        normal = _normal;
+        depth = _depth;
     }
 
     if (M > 0 && targetPDF > 0.f) {
@@ -132,6 +137,9 @@ struct SOA<DIReservoir> {
         res.targetPdf = targetPdf[i];
         res.weightSum = weightSum[i];
         res.sampledLightP = sampledLightP[i];
+        Float4 hitNormal = Load4(normal + i);
+        res.normal = Normal3f(hitNormal.v[0], hitNormal.v[1], hitNormal.v[2]);
+        res.depth = depth[i];
         res.W = W[i];
         res.M = int(M[i]);
         res.age = int(age[i]);
@@ -187,6 +195,8 @@ struct SOA<DIReservoir> {
             soa->targetPdf[index] = res.targetPdf;
             soa->weightSum[index] = res.weightSum;
             soa->sampledLightP[index] = res.sampledLightP;
+            soa->normal[index] = Float4{res.normal.x, res.normal.y, res.normal.z, 0};
+            soa->depth[index] = res.depth;
             soa->W[index] = res.W;
             soa->M[index] = Float(res.M);
             soa->age[index] = Float(res.age);
@@ -233,6 +243,8 @@ struct SOA<DIReservoir> {
     Float *PBRT_RESTRICT targetPdf;
     Float *PBRT_RESTRICT weightSum;
     Float *PBRT_RESTRICT sampledLightP;
+    Float4 *PBRT_RESTRICT normal;
+    Float *PBRT_RESTRICT depth; 
     Float *PBRT_RESTRICT W;
     Float *PBRT_RESTRICT M;
     Float *PBRT_RESTRICT age;
