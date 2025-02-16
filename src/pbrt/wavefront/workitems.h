@@ -110,6 +110,8 @@ struct SOA<DIReservoir> {
         sampledLightP = alloc.allocate_object<Float>(size);
         W = alloc.allocate_object<Float>(size);
         M = alloc.allocate_object<Float>(size);           // Store int as Float
+        normal = alloc.allocate_object<Float4>(size);      
+        depth = alloc.allocate_object<Float>(size);           // Store int as Float
         age = alloc.allocate_object<Float>(size);         // Store int as Float
         visibility = alloc.allocate_object<Float>(size);  // Store bool as Float
         isVisCheck = alloc.allocate_object<Float>(size);  // Store bool as Float
@@ -397,6 +399,10 @@ struct SOA<RaySamples> {
 
 struct ImageState {
     DIReservoir diReservoir;
+    Float shadowRayCount;
+    Float exitAt1;
+    Float exitAt2;
+    Float exitAt3;
 };
 
 // PixelSampleState Definition
@@ -410,10 +416,6 @@ struct PixelSampleState {
     SampledSpectrum cameraRayWeight;
     RaySamples samples;
     SampledSpectrum DirectL;
-    Float shadowRayCount;
-    Float exitAt1;
-    Float exitAt2;
-    Float exitAt3;
 };
 
 // RayWorkItem Definition

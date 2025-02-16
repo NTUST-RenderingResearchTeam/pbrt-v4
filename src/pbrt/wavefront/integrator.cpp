@@ -931,7 +931,7 @@ ReSTIRDIWavefrontPathIntegrator::ReSTIRDIWavefrontPathIntegrator(
     totalPixelNumber = resolution.x * resolution.y;
     LOG_VERBOSE("Will render in %d passes %d scanlines per pass\n", nPasses,
                 scanlinesPerPass);
-
+    LOG_VERBOSE("Max queue size %d, Total pixel number %d\n", maxQueueSize, totalPixelNumber);
     pixelSampleState = SOA<PixelSampleState>(maxQueueSize, alloc);
     imageState = SOA<ImageState>(totalPixelNumber, alloc);
 
@@ -1027,10 +1027,11 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
         else
             lastSampleIndex = firstSampleIndex + 1;
     }
-
+    LOG_VERBOSE("DI start");
+    ResetDIReservoir();
+    LOG_VERBOSE("Starting rendering");
     ProgressReporter progress(lastSampleIndex - firstSampleIndex, "Rendering",
                               Options->quiet || Options->interactive, Options->useGPU);
-    ResetDIReservoir();
     int sampleStageIndex;
     for (int sampleIndex = firstSampleIndex; sampleIndex < lastSampleIndex || gui;
          ++sampleIndex) {
@@ -1146,7 +1147,7 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
                     //if (wavefrontDepth == 0)
                     //    SaveDirectLightContribution();
                 }
-                if (lastSampleIndex - sampleIndex <= 2)
+                //if (lastSampleIndex - sampleIndex <= 2)
                     UpdateFilm();
             }
 
@@ -1206,28 +1207,27 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
     int exitAt1Count = 0;
     int exitAt2Count = 0;
     int exitAt3Count = 0;
-    for (int i = 0; i < maxQueueSize; i++) {
-        Float shadowrayCount = pixelSampleState.shadowRayCount[i];
-        Float exitAt1 = pixelSampleState.exitAt1[i];
-        Float exitAt2 = pixelSampleState.exitAt2[i];
-        Float exitAt3 = pixelSampleState.exitAt3[i];
-        if (shadowrayCount > 0)
-            nonZeroShadowrayCount++;
-        exitAt1Count += exitAt1;
-        exitAt2Count += exitAt2;
-        exitAt3Count += exitAt3;
-        //LOG_VERBOSE("At pixel %d, shadowray count is %f, exit at 1 %f, exit at 2 %f, exit at 3 %f", i, shadowrayCount, exitAt1, exitAt2, exitAt3);
-    }
     for (int i = 0; i < totalPixelNumber; ++i)
     {
         DIReservoir reservoir = imageState.diReservoir[i];
         if (reservoir.M > 0)
             nonZeroCount++;
+        Float shadowrayCount = imageState.shadowRayCount[i];
+        Float exitAt1 = imageState.exitAt1[i];
+        Float exitAt2 = imageState.exitAt2[i];
+        Float exitAt3 = imageState.exitAt3[i];
+        if (shadowrayCount > 0)
+            nonZeroShadowrayCount++;
+        exitAt1Count += exitAt1;
+        exitAt2Count += exitAt2;
+        exitAt3Count += exitAt3;
+        // LOG_VERBOSE("At pixel %d, shadowray count is %f, exit at 1 %f, exit at 2 %f,
+        // exit at 3 %f", i, shadowrayCount, exitAt1, exitAt2, exitAt3);
     }
-    LOG_VERBOSE("Total pixel %d", maxQueueSize);
-    LOG_VERBOSE("zero count %d", maxQueueSize - nonZeroCount);
+    LOG_VERBOSE("Total pixel %d", totalPixelNumber);
+    LOG_VERBOSE("zero count %d", totalPixelNumber - nonZeroCount);
     LOG_VERBOSE("non zero count %d", nonZeroCount);
-    LOG_VERBOSE("zero shadow ray count %d", maxQueueSize - nonZeroShadowrayCount);
+    LOG_VERBOSE("zero shadow ray count %d", totalPixelNumber - nonZeroShadowrayCount);
     LOG_VERBOSE("non zero shadow ray count %d", nonZeroShadowrayCount);
     LOG_VERBOSE("Total exit at 1 %d", exitAt1Count);
     LOG_VERBOSE("Total exit at 2 %d", exitAt2Count);
@@ -1243,14 +1243,10 @@ void ReSTIRDIWavefrontPathIntegrator::ResetDIReservoir() {
     ParallelFor(
         "Reset DI Reservoir", totalPixelNumber, PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
             imageState.diReservoir[pixelIndex] = DIReservoir();
-        });
-    ParallelFor(
-        "Reset DI Reservoir", maxQueueSize,
-        PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
-            pixelSampleState.shadowRayCount[pixelIndex] = 0;
-            pixelSampleState.exitAt1[pixelIndex] = 0;
-            pixelSampleState.exitAt2[pixelIndex] = 0;
-            pixelSampleState.exitAt3[pixelIndex] = 0;
+            imageState.shadowRayCount[pixelIndex] = 0;
+            imageState.exitAt1[pixelIndex] = 0;
+            imageState.exitAt2[pixelIndex] = 0;
+            imageState.exitAt3[pixelIndex] = 0;
         });
 }
 

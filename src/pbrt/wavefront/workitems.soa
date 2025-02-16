@@ -30,6 +30,10 @@ soa DIReservoir;
 
 soa ImageState {
     DIReservoir diReservoir;
+    Float shadowRayCount;
+    Float exitAt1;
+    Float exitAt2;
+    Float exitAt3;
 };
 
 soa PixelSampleState {
@@ -41,10 +45,6 @@ soa PixelSampleState {
     VisibleSurface visibleSurface;
     RaySamples samples;
     SampledSpectrum DirectL;
-    Float shadowRayCount;
-    Float exitAt1;
-    Float exitAt2;
-    Float exitAt3;
 };
 
 soa RayWorkItem {
