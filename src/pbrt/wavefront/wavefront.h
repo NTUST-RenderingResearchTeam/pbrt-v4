@@ -13,6 +13,8 @@ namespace pbrt {
 
 void RenderWavefront(BasicScene &);
 
+void RenderReSTIRDIWavefront(BasicScene &);
+
 }
 
 #endif  // PBRT_WAVEFRONT_WAVEFRONT_H

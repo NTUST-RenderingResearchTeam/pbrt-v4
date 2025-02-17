@@ -22,8 +22,21 @@
 namespace pbrt {
 
 // EvaluateMaterialCallback Definition
-template <typename IntegratorT>
 struct EvaluateMaterialCallback {
+    int wavefrontDepth;
+    WavefrontPathIntegrator *integrator;
+    Transform movingFromCamera;
+    // EvaluateMaterialCallback Public Methods
+    template <typename ConcreteMaterial>
+    void operator()() {
+        if constexpr (!std::is_same_v<ConcreteMaterial, MixMaterial>)
+            integrator->EvaluateMaterialAndBSDF<ConcreteMaterial>(wavefrontDepth,
+                                                                  movingFromCamera);
+    }
+};
+
+template <typename IntegratorT>
+struct ReSTIREvaluateMaterialCallback {
     int wavefrontDepth;
     IntegratorT *integrator;
     Transform movingFromCamera;
@@ -31,15 +44,15 @@ struct EvaluateMaterialCallback {
     template <typename ConcreteMaterial>
     void operator()() {
         if constexpr (!std::is_same_v<ConcreteMaterial, MixMaterial>)
-            integrator->template EvaluateMaterialAndBSDF<ConcreteMaterial>(wavefrontDepth,
-                                                                  movingFromCamera);
+            integrator->template EvaluateMaterialAndBSDF<ConcreteMaterial>(
+                wavefrontDepth, movingFromCamera);
     }
 };
 
 // WavefrontPathIntegrator Surface Scattering Methods
 void WavefrontPathIntegrator::EvaluateMaterialsAndBSDFs(int wavefrontDepth,
                                                         Transform movingFromCamera) {
-    ForEachType(EvaluateMaterialCallback<WavefrontPathIntegrator>{wavefrontDepth, this, movingFromCamera},
+    ForEachType(EvaluateMaterialCallback{wavefrontDepth, this, movingFromCamera},
                 Material::Types());
 }
 
@@ -329,7 +342,7 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
 void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialsAndBSDFs(
     int wavefrontDepth,
                                                         Transform movingFromCamera) {
-    ForEachType(EvaluateMaterialCallback<ReSTIRDIWavefrontPathIntegrator>{wavefrontDepth, this, movingFromCamera},
+    ForEachType(ReSTIREvaluateMaterialCallback<ReSTIRDIWavefrontPathIntegrator>{wavefrontDepth, this, movingFromCamera},
                 Material::Types());
 }
 

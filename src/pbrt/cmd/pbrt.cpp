@@ -284,6 +284,7 @@ int main(int argc, char *argv[]) {
         // Render the scene
         if (Options->useGPU || Options->wavefront)
             RenderWavefront(scene);
+            //RenderReSTIRDIWavefront(scene);
         else
             RenderCPU(scene);
 
