@@ -341,9 +341,10 @@ Float WavefrontPathIntegrator::Render() {
 #if !(defined(PBRT_IS_WINDOWS) && defined(PBRT_BUILD_GPU_RENDERER) && \
       __CUDACC_VER_MAJOR__ == 11 && __CUDACC_VER_MINOR__ == 1)
         CheckCallbackScope _([&]() {
-            return StringPrintf("Wavefront rendering failed at sample %d stage %d. Debug with "
-                                "\"--debugstart %d\"\n",
-                                sampleIndex, sampleStageIndex, sampleIndex);
+            return StringPrintf(
+                "Wavefront rendering failed at sample %d stage %d. Debug with "
+                "\"--debugstart %d\"\n",
+                sampleIndex, sampleStageIndex, sampleIndex);
         });
 #endif
 
@@ -357,11 +358,11 @@ Float WavefrontPathIntegrator::Render() {
                 // Generate camera rays for current scanline range
                 RayQueue *cameraRayQueue = CurrentRayQueue(0);
                 Do(
-                   "Reset ray queue", PBRT_CPU_GPU_LAMBDA() {
-                       PBRT_DBG("Starting scanlines at y0 = %d, sample %d / %d\n", y0,
-                                sampleIndex, samplesPerPixel);
-                       cameraRayQueue->Reset();
-                   });
+                    "Reset ray queue", PBRT_CPU_GPU_LAMBDA() {
+                        PBRT_DBG("Starting scanlines at y0 = %d, sample %d / %d\n", y0,
+                                 sampleIndex, samplesPerPixel);
+                        cameraRayQueue->Reset();
+                    });
 
                 Transform cameraMotion;
                 if (gui)
@@ -371,34 +372,35 @@ Float WavefrontPathIntegrator::Render() {
                 sampleStageIndex = 0;
                 GenerateCameraRays(y0, cameraMotion, sampleIndex);
                 Do(
-                   "Update camera ray stats",
-                   PBRT_CPU_GPU_LAMBDA() { stats->cameraRays += cameraRayQueue->Size(); });
+                    "Update camera ray stats", PBRT_CPU_GPU_LAMBDA() {
+                        stats->cameraRays += cameraRayQueue->Size();
+                    });
 
                 // Trace rays and estimate radiance up to maximum ray depth
                 for (int wavefrontDepth = 0; true; ++wavefrontDepth) {
                     // Reset queues before tracing rays
                     RayQueue *nextQueue = NextRayQueue(wavefrontDepth);
                     Do(
-                       "Reset queues before tracing rays", PBRT_CPU_GPU_LAMBDA() {
-                           nextQueue->Reset();
-                           // Reset queues before tracing next batch of rays
-                           if (mediumSampleQueue)
-                               mediumSampleQueue->Reset();
-                           if (mediumScatterQueue)
-                               mediumScatterQueue->Reset();
+                        "Reset queues before tracing rays", PBRT_CPU_GPU_LAMBDA() {
+                            nextQueue->Reset();
+                            // Reset queues before tracing next batch of rays
+                            if (mediumSampleQueue)
+                                mediumSampleQueue->Reset();
+                            if (mediumScatterQueue)
+                                mediumScatterQueue->Reset();
 
-                           if (escapedRayQueue)
-                               escapedRayQueue->Reset();
-                           hitAreaLightQueue->Reset();
+                            if (escapedRayQueue)
+                                escapedRayQueue->Reset();
+                            hitAreaLightQueue->Reset();
 
-                           basicEvalMaterialQueue->Reset();
-                           universalEvalMaterialQueue->Reset();
+                            basicEvalMaterialQueue->Reset();
+                            universalEvalMaterialQueue->Reset();
 
-                           if (bssrdfEvalQueue)
-                               bssrdfEvalQueue->Reset();
-                           if (subsurfaceScatterQueue)
-                               subsurfaceScatterQueue->Reset();
-                       });
+                            if (bssrdfEvalQueue)
+                                bssrdfEvalQueue->Reset();
+                            if (subsurfaceScatterQueue)
+                                subsurfaceScatterQueue->Reset();
+                        });
 
                     // Follow active ray paths and accumulate radiance estimates
                     sampleStageIndex = 1;
@@ -407,17 +409,18 @@ Float WavefrontPathIntegrator::Render() {
                     // Find closest intersections along active rays
                     sampleStageIndex = 2;
                     aggregate->IntersectClosest(
-                                                maxQueueSize, CurrentRayQueue(wavefrontDepth), escapedRayQueue,
-                                                hitAreaLightQueue, basicEvalMaterialQueue, universalEvalMaterialQueue,
-                                                mediumSampleQueue, NextRayQueue(wavefrontDepth));
+                        maxQueueSize, CurrentRayQueue(wavefrontDepth), escapedRayQueue,
+                        hitAreaLightQueue, basicEvalMaterialQueue,
+                        universalEvalMaterialQueue, mediumSampleQueue,
+                        NextRayQueue(wavefrontDepth));
 
                     if (wavefrontDepth > 0) {
                         // As above, with the indexing...
                         RayQueue *statsQueue = CurrentRayQueue(wavefrontDepth);
                         Do(
-                           "Update indirect ray stats", PBRT_CPU_GPU_LAMBDA() {
-                               stats->indirectRays[wavefrontDepth] += statsQueue->Size();
-                           });
+                            "Update indirect ray stats", PBRT_CPU_GPU_LAMBDA() {
+                                stats->indirectRays[wavefrontDepth] += statsQueue->Size();
+                            });
                     }
 
                     sampleStageIndex = 3;
@@ -435,13 +438,15 @@ Float WavefrontPathIntegrator::Render() {
                     sampleStageIndex = 6;
                     EvaluateMaterialsAndBSDFs(wavefrontDepth, cameraMotion);
 
-                    // Do immediately so that we have space for shadow rays for subsurface..
+                    // Do immediately so that we have space for shadow rays for
+                    // subsurface..
                     sampleStageIndex = 7;
                     TraceShadowRays(wavefrontDepth);
 
                     sampleStageIndex = 8;
                     SampleSubsurface(wavefrontDepth);
                 }
+
                 UpdateFilm();
             }
 
@@ -481,7 +486,6 @@ Float WavefrontPathIntegrator::Render() {
                     });
             }
         }
-
     }
 
     if (gui) {

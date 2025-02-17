@@ -19,10 +19,9 @@ void WavefrontPathIntegrator::UpdateFilm() {
                 return;
 
             // Compute final weighted radiance value
-            SampledSpectrum di = pixelSampleState.DirectL[pixelIndex];
-            SampledSpectrum L = SampledSpectrum(pixelSampleState.L[pixelIndex]);
-            SampledSpectrum Lw;
-            Lw = L * pixelSampleState.cameraRayWeight[pixelIndex];
+            SampledSpectrum Lw = SampledSpectrum(pixelSampleState.L[pixelIndex]) *
+                                 pixelSampleState.cameraRayWeight[pixelIndex];
+
             PBRT_DBG("Adding Lw %f %f %f %f at pixel (%d, %d)\n", Lw[0], Lw[1], Lw[2],
                      Lw[3], pPixel.x, pPixel.y);
             // Provide sample radiance value to film
