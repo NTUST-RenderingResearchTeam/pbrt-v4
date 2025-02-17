@@ -32,70 +32,54 @@ struct DIReservoir {
     // Check reuse correleation
     Normal3f normal;
     Float depth;
+    Float targetPdf = 0.f;
 
     Point2f uv;
     bool visibility = true;
     bool isVisCheck = false;
-    Float targetPdf = 0.f;
     Point2i spatialDistance = Point2i(0, 0);
     int age = 0;
 
     PBRT_CPU_GPU
-    void combineReservoir(const DIReservoir &src, Float rng);
+    void combineReservoir(const DIReservoir &src, Float rng, Float targetPDF);
 
     PBRT_CPU_GPU
     void update(const pstd::optional<LightLiSample> &lightSample, Float rng, Float weight,
+                Float M,
                 Float targetPDF, Float sampledLightP, Normal3f normal, Float depth);
+    PBRT_CPU_GPU
+    void updateWeight();
 };
 
-PBRT_CPU_GPU 
-void inline DIReservoir::combineReservoir(const DIReservoir& src, Float rng)
-{
-    LOG_VERBOSE("Start combine reservoir");
-    float UCW = src.targetPdf * (src.W / src.weightSum);
-    float misWeight = src.M / (src.M + M); 
-    float risWeight = misWeight * UCW;
-    LOG_VERBOSE("UCW:%f MIS Weight:%f RIS Weight:%f", UCW, misWeight, risWeight);
-
-    M = M + src.M;
-    weightSum += risWeight;
-
-    if (risWeight < rng){
-        PBRT_DBG("new combine");
-        W = risWeight;
-        targetPdf = src.targetPdf;
-        visibility = src.visibility;
-        isVisCheck = src.isVisCheck;
-        if (false) {
-            isVisCheck = false;
-            visibility = true;
-        }
-        uv = src.uv;
-        //sampledLight = sampledLight;
-        ls = src.ls;
-        spatialDistance = src.spatialDistance;
-        age = src.age;
-        age++;
+PBRT_CPU_GPU
+void inline DIReservoir::updateWeight(){
+    if (M > 0 && targetPdf > 0.f) {
+        W = (weightSum / M) / targetPdf;
+    } else {
+        W = 0.f;
     }
 }
 
+PBRT_CPU_GPU 
+void inline DIReservoir::combineReservoir(const DIReservoir &src, Float rng,
+                                          Float targetPDF) {
+    
+}
+
 inline void DIReservoir::update(const pstd::optional<LightLiSample> &lightSample,
-                                Float rng, Float weight, Float targetPDF,
+                                Float rng, Float weight, Float _M, Float _targetPdf,
                                 Float _sampledLightP, Normal3f _normal, Float _depth) {
     weightSum += weight;
-    M += 1;
+    M += _M;
+    if (M > 30)
+        M = 30;
 
     if (rng < weight / weightSum) {
         ls = lightSample;
         sampledLightP = _sampledLightP;
         normal = _normal;
         depth = _depth;
-    }
-
-    if (M > 0 && targetPDF > 0.f) {
-        W = (weightSum / M) / targetPDF;
-    } else {
-        W = 0.f;
+        targetPdf = _targetPdf;
     }
 }
 
