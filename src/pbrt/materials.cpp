@@ -412,7 +412,7 @@ MetalRoughnessBxDF MetalRoughnessMaterial::GetBxDF(TextureEvaluator texEval,
         // https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#metal-brdf-and-dielectric-brdf
         // resultDiffuseAlbedo = diffuse.Sample(lambda);
         // resultSpecularF0 = resultDiffuseTex;
-        resultDiffuseAlbedo = Lerp(resultMetallic, resultBaseColor, SampledSpectrum(.0f));
+        resultDiffuseAlbedo = Lerp(resultMetallic, resultBaseColor * (1.0 - c_DielectricSpecular), SampledSpectrum(.0f));
         resultSpecularF0 = Lerp(resultMetallic, SampledSpectrum(c_DielectricSpecular), resultBaseColor);
     }
     

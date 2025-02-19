@@ -182,6 +182,8 @@ class WavefrontIntegrator : public Integrator {
 
     bool disableBSDFLightSample = true;
 
+    bool disableFilmGBuffer = false;
+
     //for motion vector
     Point3f currentPCamera;
     Point3f prevPCamera;
@@ -225,13 +227,13 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
 
       //spatial parameter
       bool isSpatial = true;
-      Float spatialRadius = 16.0f;
-      int numSpatialSamples = 8;
+      Float spatialRadius = 32.0f;
+      int numSpatialSamples = 1;
       Float maxSpatialDistance = 32.f;
 
       //temporal parameter
       bool isTemporal = true;
-      int maxAge = 16;
+      int maxAge = 20;
       int historyLimit = 20;
 
       bool isSpatiotemporal = false;

@@ -71,8 +71,12 @@ pstd::optional<ShapeIntersection> GeometricPrimitive::Intersect(const Ray &r,
     if (alpha) {
         if (Float a = alpha.Evaluate(si->intr); a < 1) {
             // Possibly ignore intersection based on stochastic alpha test
-            Float u = (a <= 0) ? 1.f : HashFloat(r.o, r.d);
-            if (u > a) {
+            // *Add RTX-DI
+            // *Disable rand alpha
+            if (0.5f >= a) {
+
+            // Float u = (a <= 0) ? 1.f : HashFloat(r.o, r.d);
+            // if (u > a) {
                 // Ignore this intersection and trace a new ray
                 Ray rNext = si->intr.SpawnRay(r.d);
                 pstd::optional<ShapeIntersection> siNext =

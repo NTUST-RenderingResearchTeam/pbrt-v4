@@ -398,9 +398,11 @@ class RGBToSpectrumTable {
 class LinearColorEncoding;
 class sRGBColorEncoding;
 class GammaColorEncoding;
+// *Add to srgb encoding to same as RTX-DI
+class LinearTosRGBColorEncoding;
 
 class ColorEncoding
-    : public TaggedPointer<LinearColorEncoding, sRGBColorEncoding, GammaColorEncoding> {
+    : public TaggedPointer<LinearColorEncoding, sRGBColorEncoding, GammaColorEncoding, LinearTosRGBColorEncoding> {
   public:
     using TaggedPointer::TaggedPointer;
     // ColorEncoding Interface
@@ -417,6 +419,7 @@ class ColorEncoding
 
     static ColorEncoding Linear;
     static ColorEncoding sRGB;
+    static ColorEncoding LinearTosRGB;
 
     static void Init(Allocator alloc);
 };
@@ -454,6 +457,22 @@ class sRGBColorEncoding {
     void FromLinear(pstd::span<const Float> vin, pstd::span<uint8_t> vout) const;
 
     std::string ToString() const { return "[ sRGBColorEncoding ]"; }
+};
+
+// *Add to srgb encoding to same as RTX-DI
+class LinearTosRGBColorEncoding {
+  public:
+    // LinearTosRGBColorEncoding Public Methods
+    PBRT_CPU_GPU
+    void ToLinear(pstd::span<const uint8_t> vin, pstd::span<Float> vout) const;
+
+    PBRT_CPU_GPU
+    Float ToFloatLinear(Float v) const;
+
+    PBRT_CPU_GPU
+    void FromLinear(pstd::span<const Float> vin, pstd::span<uint8_t> vout) const;
+
+    std::string ToString() const { return "[ LinearTosRGBColorEncoding ]"; }
 };
 
 class GammaColorEncoding {

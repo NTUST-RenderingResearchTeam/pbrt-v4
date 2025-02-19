@@ -87,11 +87,20 @@ inline PBRT_CPU_GPU void NormalMap(const Image &normalMap,
                                    const NormalBumpEvalContext &ctx, Vector3f *dpdu,
                                    Vector3f *dpdv) {
     // Get normalized normal vector from normal map
+    // *Add RTX-DI, flip to fit RTX-DI normal map
+    bool normalFlip = true;
     WrapMode2D wrap(WrapMode::Repeat);
     Point2f uv(ctx.uv[0], 1 - ctx.uv[1]);
     Vector3f ns(2 * normalMap.BilerpChannel(uv, 0, wrap) - 1,
                 2 * normalMap.BilerpChannel(uv, 1, wrap) - 1,
                 2 * normalMap.BilerpChannel(uv, 2, wrap) - 1);
+
+    if(normalFlip)
+    {
+        ns.x = -ns.x;
+        ns.z = -ns.z;
+    }
+                
     ns = Normalize(ns);
 
     // Transform tangent-space normal to rendering space

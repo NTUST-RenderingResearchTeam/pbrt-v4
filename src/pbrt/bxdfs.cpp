@@ -99,11 +99,15 @@ SampledSpectrum GGX_times_NdotL(Vector3f V, Vector3f L, Vector3f N, Float roughn
 }
 
 SampledSpectrum MetalRoughnessBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
-    if (!SameHemisphere(Vector3f(0,0,1), wi))
+    Vector3f n = Vector3f(0,0,1);
+    if(!SameHemisphere(n, wo))
+        n *= -1.0f;
+
+    if (!SameHemisphere(n, wi))
         return SampledSpectrum(0.f);
     // Vector3f n = SameHemisphere(wo, Vector3f(0,0,1)) ? Vector3f(0,0,1) : Vector3f(0,0,-1);
     
-    Vector3f n = Vector3f(0,0,1);
+    
     Float diffuseLambert = std::max<Float>(0.0f, -Dot(n, -wi)) * InvPi;
     SampledSpectrum specular;
     if (roughness == 0)

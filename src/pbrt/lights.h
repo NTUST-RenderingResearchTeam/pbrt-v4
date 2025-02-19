@@ -450,18 +450,23 @@ class DiffuseAreaLight : public LightBase {
 
         if (image) {
             // Return _DiffuseAreaLight_ emission using image
+            // *should modify this to use in GPU rendering?
             RGB rgb;
+            WrapMode2D wrap(WrapMode::Repeat);
             uv[1] = 1 - uv[1];
             for (int c = 0; c < 3; ++c)
-                rgb[c] = image->BilerpChannel(uv, c);
+                rgb[c] = image->BilerpChannel(uv, c, wrap);
             // *Add Disablewavelength
+            rgb = ClampZero(rgb);
             if(disableWavelength){
-                RGBConstantSpectrum spec(*imageColorSpace, ClampZero(rgb));
-                return emissiveFactor.Sample(lambda) * spec.Sample(lambda);
+                Float RGB[4] = {rgb.r, rgb.g, rgb.b, 0.0f} ;
+                SampledSpectrum spec(RGB);
+                return emissiveFactor.Sample(lambda) * spec;
             }
             else{
-                RGBIlluminantSpectrum spec(*imageColorSpace, ClampZero(rgb));
-                return scale * spec.Sample(lambda);
+                Float RGB[4] = {rgb.r, rgb.g, rgb.b, 0.0f} ;
+                SampledSpectrum spec(RGB);
+                return scale * spec;
             }
             
 

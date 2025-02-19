@@ -629,7 +629,7 @@ pstd::optional<CameraRayDifferential> PerspectiveCamera::GenerateRayDifferential
     Point3f pFilm = Point3f(sample.pFilm.x, sample.pFilm.y, 0);
     Point3f pCamera = cameraFromRaster(pFilm);
     Vector3f dir = Normalize(Vector3f(pCamera.x, pCamera.y, pCamera.z));
-    // TODO:: animated add time and set ray time with same interval
+    
     RayDifferential ray(Point3f(0, 0, 0), dir, aTime, medium);
     // Modify ray for depth of field
     if (lensRadius > 0) {

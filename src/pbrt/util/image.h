@@ -260,6 +260,7 @@ class Image {
         switch (format) {
         case PixelFormat::U256: {  // Return _U256_-encoded pixel channel value
             Float r;
+            // *PBRT weird bug?, alpha do color encoding too?
             encoding.ToLinear({&p8[PixelOffset(p) + c], 1}, {&r, 1});
             return r;
         }

@@ -2117,7 +2117,8 @@ void ReSTIRIntegrator::Render() {
 
                 VisibleSurface visibleSurface;
                 
-                if(rsBuffer.isect){
+                if(!disableFilmGBuffer){
+                    if(rsBuffer.isect){
                     visibleSurface.p = rsBuffer.isect->intr.p();
                     Vector3f wo = rsBuffer.isect->intr.wo;
                     visibleSurface.n = FaceForward(rsBuffer.isect->intr.n, wo);
@@ -2127,12 +2128,14 @@ void ReSTIRIntegrator::Render() {
                     visibleSurface.dpdx = rsBuffer.isect->intr.dpdx;
                     visibleSurface.dpdy = rsBuffer.isect->intr.dpdy;
                     visibleSurface.set = true;
+                    }
+                    if(rsBuffer.bsdf){
+                        visibleSurface.albedo = rsBuffer.bsdf->GetDiffuse();
+                        visibleSurface.specular = rsBuffer.bsdf->GetSpecular();
+                        visibleSurface.set = true;
+                    }
                 }
-                if(rsBuffer.bsdf){
-                    visibleSurface.albedo = rsBuffer.bsdf->GetDiffuse();
-                    visibleSurface.specular = rsBuffer.bsdf->GetSpecular();
-                    visibleSurface.set = true;
-                }
+                
                     
                 
                 camera.GetFilm().AddSample(pPixel, L, buffer.lambda, &visibleSurface,

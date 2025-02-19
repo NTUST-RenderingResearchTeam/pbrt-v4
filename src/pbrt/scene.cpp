@@ -898,8 +898,9 @@ void BasicScene::startLoadingNormalMaps(const ParameterDictionary &parameters) {
 
     auto create = [=](std::string filename) {
         Allocator alloc = threadAllocators.Get();
+        // *Fix use LinearTosRGB encoding instead
         ImageAndMetadata immeta =
-            Image::Read(filename, Allocator(), ColorEncoding::Linear);
+            Image::Read(filename, Allocator(), ColorEncoding::LinearTosRGB);
         Image &image = immeta.image;
         ImageChannelDesc rgbDesc = image.GetChannelDesc({"R", "G", "B"});
         if (!rgbDesc)
@@ -1315,7 +1316,7 @@ std::vector<Light> BasicScene::CreateLights(
     };
 
     // *Add
-    // load emisivemap
+    // load emissivemap
     LOG_VERBOSE("Starting to consume %d emissive map futures", emissiveMapJobs.size());
     std::lock_guard<std::mutex> al_lock(areaLightMutex);
     for (auto &job : emissiveMapJobs) {

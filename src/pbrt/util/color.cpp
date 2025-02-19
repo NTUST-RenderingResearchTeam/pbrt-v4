@@ -205,9 +205,35 @@ Float sRGBColorEncoding::ToFloatLinear(Float v) const {
     return SRGBToLinear(v);
 }
 
+// *Add to srgb encoding to same as RTX-DI
+void LinearTosRGBColorEncoding::FromLinear(pstd::span<const Float> vin,
+                                   pstd::span<uint8_t> vout) const {
+    DCHECK_EQ(vin.size(), vout.size());
+        for (size_t i = 0; i < vin.size(); ++i){
+            Float vout_f = SRGBToLinear(vin[i]);
+            vout[i] = LinearToSRGB8(vout_f);
+        }
+}
+
+void LinearTosRGBColorEncoding::ToLinear(pstd::span<const uint8_t> vin,
+                                 pstd::span<Float> vout) const {
+     DCHECK_EQ(vin.size(), vout.size());
+        for (size_t i = 0; i < vin.size(); ++i){
+            Float vout_f = SRGB8ToLinear(vin[i]);
+            vout[i] = LinearToSRGB(vout_f);
+        }
+}
+
+Float LinearTosRGBColorEncoding::ToFloatLinear(Float v) const {
+    Float vout = SRGBToLinear(v);
+    vout = LinearToSRGB(vout);
+    return vout;
+}
+
 void ColorEncoding::Init(Allocator alloc) {
     Linear = alloc.new_object<LinearColorEncoding>();
     sRGB = alloc.new_object<sRGBColorEncoding>();
+    LinearTosRGB = alloc.new_object<LinearTosRGBColorEncoding>();
 }
 
 std::string ColorEncoding::ToString() const {
@@ -220,6 +246,7 @@ std::string ColorEncoding::ToString() const {
 
 ColorEncoding ColorEncoding::Linear;
 ColorEncoding ColorEncoding::sRGB;
+ColorEncoding ColorEncoding::LinearTosRGB;
 
 const ColorEncoding ColorEncoding::Get(const std::string &name, Allocator alloc) {
     if (name == "linear"){
@@ -227,6 +254,8 @@ const ColorEncoding ColorEncoding::Get(const std::string &name, Allocator alloc)
     }
     else if (name == "sRGB")
         return sRGB;
+    else if (name == "linearTosRGB")
+        return LinearTosRGB;
     else {
         static std::map<float, ColorEncoding> cache;
         static std::mutex mutex;
