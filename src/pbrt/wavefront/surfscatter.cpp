@@ -21,22 +21,22 @@
 
 namespace pbrt {
 
-// EvaluateMaterialCallback Definition
-struct EvaluateMaterialCallback {
-    int wavefrontDepth;
-    WavefrontPathIntegrator *integrator;
-    Transform movingFromCamera;
-    // EvaluateMaterialCallback Public Methods
-    template <typename ConcreteMaterial>
-    void operator()() {
-        if constexpr (!std::is_same_v<ConcreteMaterial, MixMaterial>)
-            integrator->EvaluateMaterialAndBSDF<ConcreteMaterial>(wavefrontDepth,
-                                                                  movingFromCamera);
-    }
-};
+//// EvaluateMaterialCallback Definition
+//struct EvaluateMaterialCallback {
+//    int wavefrontDepth;
+//    WavefrontPathIntegrator *integrator;
+//    Transform movingFromCamera;
+//    // EvaluateMaterialCallback Public Methods
+//    template <typename ConcreteMaterial>
+//    void operator()() {
+//        if constexpr (!std::is_same_v<ConcreteMaterial, MixMaterial>)
+//            integrator->EvaluateMaterialAndBSDF<ConcreteMaterial>(wavefrontDepth,
+//                                                                  movingFromCamera);
+//    }
+//};
 
 template <typename IntegratorT>
-struct ReSTIREvaluateMaterialCallback {
+struct EvaluateMaterialCallback {
     int wavefrontDepth;
     IntegratorT *integrator;
     Transform movingFromCamera;
@@ -50,14 +50,15 @@ struct ReSTIREvaluateMaterialCallback {
 };
 
 // WavefrontPathIntegrator Surface Scattering Methods
-void WavefrontPathIntegrator::EvaluateMaterialsAndBSDFs(int wavefrontDepth,
+void GWavefrontPathIntegrator::EvaluateMaterialsAndBSDFs(int wavefrontDepth,
                                                         Transform movingFromCamera) {
-    ForEachType(EvaluateMaterialCallback{wavefrontDepth, this, movingFromCamera},
+    ForEachType(EvaluateMaterialCallback<GWavefrontPathIntegrator>{wavefrontDepth, this,
+                                                                   movingFromCamera},
                 Material::Types());
 }
 
 template <typename ConcreteMaterial>
-void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(int wavefrontDepth,
+void GWavefrontPathIntegrator::EvaluateMaterialAndBSDF(int wavefrontDepth,
                                                       Transform movingFromCamera) {
     int index = Material::TypeIndex<ConcreteMaterial>();
     if (haveBasicEvalMaterial[index])
@@ -69,7 +70,7 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(int wavefrontDepth,
 }
 
 template <typename ConcreteMaterial, typename TextureEvaluator>
-void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQueue,
+void GWavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQueue,
                                                       Transform movingFromCamera,
                                                       int wavefrontDepth) {
     // Get BSDF for items in _evalQueue_ and sample illumination
@@ -342,7 +343,8 @@ void WavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQue
 void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialsAndBSDFs(
     int wavefrontDepth,
                                                         Transform movingFromCamera) {
-    ForEachType(ReSTIREvaluateMaterialCallback<ReSTIRDIWavefrontPathIntegrator>{wavefrontDepth, this, movingFromCamera},
+    ForEachType(EvaluateMaterialCallback<ReSTIRDIWavefrontPathIntegrator>{wavefrontDepth, this,
+                                                                  movingFromCamera},
                 Material::Types());
 }
 
@@ -806,8 +808,33 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                     int maxX = film.PixelBounds().pMax.x;
                     int maxY = film.PixelBounds().pMax.y;
 
-                    for (int dy = -radius; dy <= radius; ++dy) {
-                        for (int dx = -radius; dx <= radius; ++dx) {
+                    int spatialSampleCount = 0;
+                    for (int curOffY = 0; curOffY <= radius*2; ++ curOffY){
+                        int dy = 0;
+                        if (spatialSampleCount >= 8)
+                            break;
+                        if (curOffY == 0)
+                        {
+                            dy = 0;
+                        } else
+                        {
+                            if (curOffY % 2)
+                                dy = curOffY * -0.5;
+                            else
+                                dy = curOffY * 0.5;
+                        }
+                        for (int curOffX = 0; curOffX <= radius * 2; ++curOffX){
+                            int dx = 0;
+                            if (spatialSampleCount >= 8)
+                                break;
+                            if (curOffX == 0) {
+                                dx = 0;
+                            } else {
+                                if (curOffX % 2)
+                                    dx = curOffX *-0.5;
+                                else
+                                    dx = curOffX * 0.5;
+                            }
                             int nx = pixel.x + dx;
                             int ny = pixel.y + dy;
 
@@ -910,6 +937,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
 
                             reservoir.update(ls, rng, neighborWeight, neighborReservoir.M, target_p,
                                                 sampledLightP, normal, depth);
+                            spatialSampleCount++;
                         }
                     }
                     reservoir.updateWeight();
@@ -969,9 +997,9 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
             DIReservoir curFrameReservoir = DIReservoir();
             curFrameReservoir = addSampleToShadowRayReservoir(curFrameReservoir, 16);
             curFrameReservoir = temporalReuse(curFrameReservoir);
-            curFrameReservoir = spatialReuse(curFrameReservoir, 1);
-            addShadingRayFromReservoir(curFrameReservoir);
             imageState.diReservoir[curPixelNumber] = curFrameReservoir;
+            curFrameReservoir = spatialReuse(curFrameReservoir, 5);
+            addShadingRayFromReservoir(curFrameReservoir);
         });
 }
 

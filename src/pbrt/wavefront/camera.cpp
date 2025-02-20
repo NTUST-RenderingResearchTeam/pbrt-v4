@@ -15,7 +15,7 @@
 namespace pbrt {
 
 // WavefrontPathIntegrator Camera Ray Methods
-void WavefrontPathIntegrator::GenerateCameraRays(int y0, Transform movingFromCamera,
+void GWavefrontPathIntegrator::GenerateCameraRays(int y0, Transform movingFromCamera,
                                                  int sampleIndex) {
     // Define _generateRays_ lambda function
     auto generateRays = [=](auto sampler) {
@@ -29,7 +29,7 @@ void WavefrontPathIntegrator::GenerateCameraRays(int y0, Transform movingFromCam
 }
 
 template <typename ConcreteSampler>
-void WavefrontPathIntegrator::GenerateCameraRays(int y0, Transform movingFromCamera,
+void GWavefrontPathIntegrator::GenerateCameraRays(int y0, Transform movingFromCamera,
                                                  int sampleIndex) {
     RayQueue *rayQueue = CurrentRayQueue(0);
     ParallelFor(

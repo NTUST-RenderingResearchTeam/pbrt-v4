@@ -74,7 +74,7 @@ inline void DIReservoir::update(const pstd::optional<LightLiSample> &lightSample
     if (M > 30)
         M = 30;
 
-    if (rng < weight / weightSum) {
+    if (rng <= weight / weightSum) {
         ls = lightSample;
         sampledLightP = _sampledLightP;
         normal = _normal;

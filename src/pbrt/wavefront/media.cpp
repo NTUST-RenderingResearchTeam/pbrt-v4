@@ -11,7 +11,7 @@ namespace pbrt {
 // SampleMediumScatteringCallback Definition
 struct SampleMediumScatteringCallback {
     int wavefrontDepth;
-    WavefrontPathIntegrator *integrator;
+    GWavefrontPathIntegrator *integrator;
     template <typename PhaseFunction>
     void operator()() {
         integrator->SampleMediumScattering<PhaseFunction>(wavefrontDepth);
@@ -19,7 +19,7 @@ struct SampleMediumScatteringCallback {
 };
 
 // WavefrontPathIntegrator Participating Media Methods
-void WavefrontPathIntegrator::SampleMediumInteraction(int wavefrontDepth) {
+void GWavefrontPathIntegrator::SampleMediumInteraction(int wavefrontDepth) {
     if (!haveMedia)
         return;
 
@@ -257,7 +257,7 @@ void WavefrontPathIntegrator::SampleMediumInteraction(int wavefrontDepth) {
 }
 
 template <typename ConcretePhaseFunction>
-void WavefrontPathIntegrator::SampleMediumScattering(int wavefrontDepth) {
+void GWavefrontPathIntegrator::SampleMediumScattering(int wavefrontDepth) {
     RayQueue *currentRayQueue = CurrentRayQueue(wavefrontDepth);
     RayQueue *nextRayQueue = NextRayQueue(wavefrontDepth);
 

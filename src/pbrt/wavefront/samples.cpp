@@ -16,7 +16,7 @@
 namespace pbrt {
 
 // WavefrontPathIntegrator Sampler Methods
-void WavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth, int sampleIndex) {
+void GWavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth, int sampleIndex) {
     auto generateSamples = [=](auto sampler) {
         using ConcreteSampler = std::remove_reference_t<decltype(*sampler)>;
         if constexpr (!std::is_same_v<ConcreteSampler, MLTSampler> &&
@@ -27,7 +27,7 @@ void WavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth, int sampleI
 }
 
 template <typename ConcreteSampler>
-void WavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth, int sampleIndex) {
+void GWavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth, int sampleIndex) {
     // Generate description string _desc_ for ray sample generation
     std::string desc = std::string("Generate ray samples - ") + ConcreteSampler::Name();
 

@@ -54,7 +54,7 @@ class WavefrontAggregate {
 };
 
 // WavefrontPathIntegrator Definition
-class WavefrontPathIntegrator {
+class GWavefrontPathIntegrator {
   public:
     // WavefrontPathIntegrator Public Methods
     Float Render();
@@ -87,8 +87,8 @@ class WavefrontPathIntegrator {
 
     void UpdateFilm();
 
-    WavefrontPathIntegrator() {};
-    WavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
+    GWavefrontPathIntegrator() {};
+    GWavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
                             BasicScene &scene);
 
     template <typename F>
@@ -192,7 +192,7 @@ class WavefrontPathIntegrator {
     std::thread *copyThread;
 };
 
-class ReSTIRDIWavefrontPathIntegrator : public WavefrontPathIntegrator{
+class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
   public:
     
     Float Render();

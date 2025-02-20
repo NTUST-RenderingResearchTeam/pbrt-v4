@@ -77,7 +77,7 @@ static void updateMaterialNeeds(
         (*haveUniversalEvalMaterial)[m.Tag()] = true;
 }
 
-WavefrontPathIntegrator::WavefrontPathIntegrator(
+GWavefrontPathIntegrator::GWavefrontPathIntegrator(
     pstd::pmr::memory_resource *memoryResource, BasicScene &scene)
     : memoryResource(memoryResource), exitCopyThread(new std::atomic<bool>(false)) {
     ThreadLocal<Allocator> threadAllocators(
@@ -183,6 +183,8 @@ WavefrontPathIntegrator::WavefrontPathIntegrator(
         scene.integrator.parameters.GetOneString("lightsampler", "bvh");
     if (allLights.size() == 1)
         lightSamplerName = "uniform";
+    // Even orignal has to go uniform sampler.
+    lightSamplerName = "uniform";
     lightSampler = LightSampler::Create(lightSamplerName, allLights, alloc);
     LOG_VERBOSE("Finished creating light sampler");
 
@@ -287,7 +289,7 @@ WavefrontPathIntegrator::WavefrontPathIntegrator(
 }
 
 // WavefrontPathIntegrator Method Definitions
-Float WavefrontPathIntegrator::Render() {
+Float GWavefrontPathIntegrator::Render() {
     Bounds2i pixelBounds = film.PixelBounds();
     Vector2i resolution = pixelBounds.Diagonal();
 
@@ -507,7 +509,7 @@ Float WavefrontPathIntegrator::Render() {
     return seconds;
 }
 
-void WavefrontPathIntegrator::HandleEscapedRays() {
+void GWavefrontPathIntegrator::HandleEscapedRays() {
     if (!escapedRayQueue)
         return;
     ForAllQueued(
@@ -551,7 +553,7 @@ void WavefrontPathIntegrator::HandleEscapedRays() {
         });
 }
 
-void WavefrontPathIntegrator::HandleEmissiveIntersection() {
+void GWavefrontPathIntegrator::HandleEmissiveIntersection() {
     ForAllQueued(
         "Handle emitters hit by indirect rays", hitAreaLightQueue, maxQueueSize,
         PBRT_CPU_GPU_LAMBDA(const HitAreaLightWorkItem w) {
@@ -587,7 +589,7 @@ void WavefrontPathIntegrator::HandleEmissiveIntersection() {
         });
 }
 
-void WavefrontPathIntegrator::TraceShadowRays(int wavefrontDepth) {
+void GWavefrontPathIntegrator::TraceShadowRays(int wavefrontDepth) {
     if (haveMedia)
         aggregate->IntersectShadowTr(maxQueueSize, shadowRayQueue, &pixelSampleState);
     else
@@ -600,10 +602,10 @@ void WavefrontPathIntegrator::TraceShadowRays(int wavefrontDepth) {
         });
 }
 
-WavefrontPathIntegrator::Stats::Stats(int maxDepth, Allocator alloc)
+GWavefrontPathIntegrator::Stats::Stats(int maxDepth, Allocator alloc)
     : indirectRays(maxDepth + 1, alloc), shadowRays(maxDepth, alloc) {}
 
-std::string WavefrontPathIntegrator::Stats::Print() const {
+std::string GWavefrontPathIntegrator::Stats::Print() const {
     std::string s;
     s += StringPrintf("    %-42s               %12" PRIu64 "\n", "Camera rays",
                       cameraRays);
@@ -617,7 +619,7 @@ std::string WavefrontPathIntegrator::Stats::Print() const {
 }
 
 #ifdef PBRT_BUILD_GPU_RENDERER
-void WavefrontPathIntegrator::PrefetchGPUAllocations() {
+void GWavefrontPathIntegrator::PrefetchGPUAllocations() {
     int deviceIndex;
     CUDA_CHECK(cudaGetDevice(&deviceIndex));
     int hasConcurrentManagedAccess;
@@ -653,7 +655,7 @@ void WavefrontPathIntegrator::PrefetchGPUAllocations() {
 }
 #endif  // PBRT_BUILD_GPU_RENDERER
 
-void WavefrontPathIntegrator::StartDisplayThread() {
+void GWavefrontPathIntegrator::StartDisplayThread() {
     Bounds2i pixelBounds = film.PixelBounds();
     Vector2i resolution = pixelBounds.Diagonal();
 
@@ -733,7 +735,7 @@ void WavefrontPathIntegrator::StartDisplayThread() {
             });
 }
 
-void WavefrontPathIntegrator::UpdateDisplayRGBFromFilm(Bounds2i pixelBounds) {
+void GWavefrontPathIntegrator::UpdateDisplayRGBFromFilm(Bounds2i pixelBounds) {
 #ifdef PBRT_BUILD_GPU_RENDERER
     Vector2i resolution = pixelBounds.Diagonal();
     GPUParallelFor(
@@ -745,7 +747,7 @@ void WavefrontPathIntegrator::UpdateDisplayRGBFromFilm(Bounds2i pixelBounds) {
 #endif  //  PBRT_BUILD_GPU_RENDERER
 }
 
-void WavefrontPathIntegrator::StopDisplayThread() {
+void GWavefrontPathIntegrator::StopDisplayThread() {
 #ifdef PBRT_BUILD_GPU_RENDERER
     if (Options->useGPU) {
         // Wait until rendering is all done before we start to shut down the
@@ -764,7 +766,7 @@ void WavefrontPathIntegrator::StopDisplayThread() {
 #endif  // PBRT_BUILD_GPU_RENDERER
 }
 
-void WavefrontPathIntegrator::UpdateFramebufferFromFilm(Bounds2i pixelBounds,
+void GWavefrontPathIntegrator::UpdateFramebufferFromFilm(Bounds2i pixelBounds,
                                                         Float exposure, RGB *rgb) {
     Vector2i resolution = pixelBounds.Diagonal();
     ParallelFor(

@@ -15,7 +15,7 @@
 namespace pbrt {
 
 // WavefrontPathIntegrator Subsurface Scattering Methods
-void WavefrontPathIntegrator::SampleSubsurface(int wavefrontDepth) {
+void GWavefrontPathIntegrator::SampleSubsurface(int wavefrontDepth) {
     if (!haveSubsurface)
         return;
 
