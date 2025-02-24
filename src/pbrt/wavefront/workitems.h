@@ -71,16 +71,22 @@ inline void DIReservoir::update(const pstd::optional<LightLiSample> &lightSample
                                 Float _sampledLightP, Normal3f _normal, Float _depth) {
     weightSum += weight;
     M += _M;
-    if (M > 30)
-        M = 30;
+    /*if (M > 30)
+        M = 30;*/
 
-    if (rng <= weight / weightSum) {
+    if (rng * weightSum <= weight) {
         ls = lightSample;
         sampledLightP = _sampledLightP;
         normal = _normal;
         depth = _depth;
         targetPdf = _targetPdf;
     }
+    if (M > 0 && targetPdf > 0.f) {
+        W = (weightSum / M) / targetPdf;
+    } else {
+        W = 0.f;
+    }
+    //updateWeight();
 }
 
 template <>

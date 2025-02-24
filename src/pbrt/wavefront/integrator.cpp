@@ -944,7 +944,7 @@ ReSTIRDIWavefrontPathIntegrator::ReSTIRDIWavefrontPathIntegrator(
     rayQueues[0] = alloc.new_object<RayQueue>(maxQueueSize, alloc);
     rayQueues[1] = alloc.new_object<RayQueue>(maxQueueSize, alloc);
 
-    shadowRayQueue = alloc.new_object<ShadowRayQueue>(maxQueueSize, alloc);
+    shadowRayQueue = alloc.new_object<ShadowRayQueue>(maxQueueSize * shadowRayPerPath, alloc);
 
     if (haveSubsurface) {
         bssrdfEvalQueue =
@@ -1081,7 +1081,7 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
                     });
 
                 // Trace rays and estimate radiance up to maximum ray depth
-                for (int wavefrontDepth = 0; true; ++wavefrontDepth) {
+                for (int wavefrontDepth = 0; true;) {
                     // Reset queues before tracing rays
                     RayQueue *nextQueue = NextRayQueue(wavefrontDepth);
                     Do(
@@ -1136,7 +1136,7 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
                     sampleStageIndex = 5;
                     HandleEmissiveIntersection();
 
-                    if (wavefrontDepth == maxDepth)
+                    if (wavefrontDepth++ == maxDepth)
                         break;
 
                     sampleStageIndex = 6;
@@ -1149,9 +1149,6 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
 
                     sampleStageIndex = 8;
                     SampleSubsurface(wavefrontDepth);
-
-                    //if (wavefrontDepth == 0)
-                    //    SaveDirectLightContribution();
                 }
                 //if (lastSampleIndex - sampleIndex <= 2)
                     UpdateFilm();
@@ -1243,6 +1240,20 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
     StopDisplayThread();
 
     return seconds;
+}
+
+void ReSTIRDIWavefrontPathIntegrator::TraceShadowRays(int wavefrontDepth) {
+    if (haveMedia)
+        aggregate->IntersectShadowTr(maxQueueSize*shadowRayPerPath, shadowRayQueue, &pixelSampleState);
+    else
+        aggregate->IntersectShadow(maxQueueSize*shadowRayPerPath, shadowRayQueue, &pixelSampleState);
+    // Reset shadow ray queue
+    Do(
+        "Reset shadowRayQueue", PBRT_CPU_GPU_LAMBDA() {
+            // We have add more shadow ray that makes size not fitting anymore.
+            //stats->shadowRays[wavefrontDepth] += shadowRayQueue->Size();
+            shadowRayQueue->Reset();
+        });
 }
 
 void ReSTIRDIWavefrontPathIntegrator::ResetDIReservoir() {

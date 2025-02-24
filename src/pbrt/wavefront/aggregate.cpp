@@ -17,6 +17,7 @@
 #include <pbrt/util/pstd.h>
 #include <pbrt/util/stats.h>
 #include <pbrt/wavefront/intersect.h>
+#include "aggregate.h"
 
 namespace pbrt {
 

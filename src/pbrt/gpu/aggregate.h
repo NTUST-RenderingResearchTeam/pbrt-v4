@@ -158,6 +158,14 @@ class OptiXAggregate : public WavefrontAggregate {
     OptixTraversableHandle rootTraversable = {};
 };
 
+class ReStirOptiXAggregate : public OptiXAggregate {
+    using OptiXAggregate::OptiXAggregate;
+
+    // Importance sampling is handled by ReSTIR, so we need rewrite this.
+    void IntersectShadow(int maxRays, ShadowRayQueue *shadowRayQueue,
+                         SOA<PixelSampleState> *pixelSampleState) const;
+};
+
 }  // namespace pbrt
 
 #endif  // PBRT_GPU_AGGREGATE_H

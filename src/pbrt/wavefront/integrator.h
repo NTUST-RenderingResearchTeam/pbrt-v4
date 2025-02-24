@@ -203,6 +203,7 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
     template <typename ConcreteMaterial, typename TextureEvaluator>
     void EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQueue, Transform movingFromCamera,
                                  int wavefrontDepth);
+    void TraceShadowRays(int wavefrontDepth);
 
     void ResetDIReservoir();
 
@@ -215,6 +216,7 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
                                     BasicScene &scene);
 
     int totalPixelNumber;
+    const int shadowRayPerPath = 2;
 
     SOA<ImageState> imageState;
 };
