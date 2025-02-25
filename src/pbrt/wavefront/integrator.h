@@ -221,7 +221,7 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
 
     int totalPixelNumber;
     const int shadowRayPerPath = 2;
-    int perSampleRisNumber = 16;
+    int perSampleRisNumber = 8;
 
     SOA<ImageState> imageState;
     SOA<Point3f> risRngs;

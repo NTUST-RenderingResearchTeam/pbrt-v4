@@ -26,7 +26,18 @@ soa SubsurfaceInteraction;
 soa TabulatedBSSRDF;
 soa Vector3f;
 soa VisibleSurface;
-soa DIReservoir;
+
+soa DIReservoir{
+    LightSampleContext ctx;
+    Float lightRng;
+    Point2f lightSampleRng;
+    Float weightSum;
+    Float W;
+    int M;
+    Normal3f normal;
+    Float depth;
+    Float targetPdf;
+};
 
 soa ImageState {
     DIReservoir diReservoirA;
