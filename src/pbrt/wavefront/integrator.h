@@ -197,6 +197,10 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
     
     Float Render();
 
+    void GenerateRaySamples(int wavefrontDepth, int sampleIndex);
+    template <typename Sampler>
+    void GenerateRaySamples(int wavefrontDepth, int sampleIndex);
+
     void EvaluateMaterialsAndBSDFs(int wavefrontDepth, Transform movingFromCamera);
     template <typename ConcreteMaterial>
     void EvaluateMaterialAndBSDF(int wavefrontDepth, Transform movingFromCamera);
@@ -217,8 +221,10 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
 
     int totalPixelNumber;
     const int shadowRayPerPath = 2;
+    int perSampleRisNumber = 16;
 
     SOA<ImageState> imageState;
+    SOA<Point3f> risRngs;
 };
 
 }  // namespace pbrt

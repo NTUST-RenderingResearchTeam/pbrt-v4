@@ -628,17 +628,21 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                                       w.n.z + w.wo.x + w.wo.y + w.wo.z + risCount + raySamples.direct.u.x;
                         Float seed3 = w.time + w.pixelIndex + w.depth + w.n.x + w.n.y +
                                       w.n.z + w.wo.x + w.wo.y + w.wo.z + risCount + raySamples.direct.u.y;
+                       // pstd::optional<SampledLight> sampledLight = lightSampler.Sample(ctx, raySamples.direct.uc);
                         pstd::optional<SampledLight> sampledLight =
-                            lightSampler.Sample(ctx, rng1D(seed1));
+                            lightSampler.Sample(ctx, risRngs.x[w.pixelIndex*risCount]);
                         if (!sampledLight) {
                             continue;
                         }
                         Light light = sampledLight->light;
 
                         // Sample light source and evaluate BSDF for direct lighting
-                        pstd::optional<LightLiSample> ls =
-                            light.SampleLi(ctx, Point2f(rng1D(seed2), rng1D(seed3)), lambda, true);
-
+                        //pstd::optional<LightLiSample> ls =
+                        //    light.SampleLi(ctx, raySamples.direct.u, lambda, true);
+                        pstd::optional<LightLiSample> ls = light.SampleLi(ctx,
+                                           Point2f(risRngs.y[w.pixelIndex * risCount],
+                                                   risRngs.z[w.pixelIndex * risCount]),
+                                           lambda, true);
                         if (!ls || !ls->L || ls->pdf == 0) {
                             continue;
                         }
@@ -972,7 +976,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                     IsDeltaLight(light.Type()) ? 0.f : bsdf.PDF<ConcreteBxDF>(wo, wi);
                 SampledSpectrum r_u = w.r_u * bsdfPDF;
                 SampledSpectrum r_l = w.r_u * lightPDF;
-                printf("brdf %f, light %f\n", bsdfPDF, lightPDF);
+                //printf("brdf %f, light %f\n", bsdfPDF, lightPDF);
 
                 // Enqueue shadow ray with tentative radiance contribution
                 SampledSpectrum Ld = beta * ls->L;
@@ -995,9 +999,10 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                          SafeDiv(beta, r_u)[3], SafeDiv(Ld, r_u)[0], SafeDiv(Ld, r_u)[1],
                          SafeDiv(Ld, r_u)[2], SafeDiv(Ld, r_u)[3]);
             }
-            return;
+            //return;
             DIReservoir curFrameReservoir;
-            curFrameReservoir = addSampleToShadowRayReservoir(curFrameReservoir, 1);
+            curFrameReservoir =
+                addSampleToShadowRayReservoir(curFrameReservoir, perSampleRisNumber);
             addShadingRayFromReservoir(curFrameReservoir);
             return;
             curFrameReservoir = temporalReuse(curFrameReservoir);

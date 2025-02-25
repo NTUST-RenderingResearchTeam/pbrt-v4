@@ -939,6 +939,7 @@ ReSTIRDIWavefrontPathIntegrator::ReSTIRDIWavefrontPathIntegrator(
                 scanlinesPerPass);
     LOG_VERBOSE("Max queue size %d, Total pixel number %d\n", maxQueueSize, totalPixelNumber);
     pixelSampleState = SOA<PixelSampleState>(maxQueueSize, alloc);
+    risRngs = SOA<Point3f>(maxQueueSize * perSampleRisNumber, alloc);
     imageState = SOA<ImageState>(totalPixelNumber, alloc);
 
     rayQueues[0] = alloc.new_object<RayQueue>(maxQueueSize, alloc);

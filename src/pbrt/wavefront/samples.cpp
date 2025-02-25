@@ -49,14 +49,65 @@ void GWavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth, int sample
             RaySamples rs;
             rs.direct.uc = pixelSampler.Get1D();
             rs.direct.u = pixelSampler.Get2D();
-            rs.direct1.uc = pixelSampler.Get1D();
-            rs.direct1.u = pixelSampler.Get2D();
-            rs.direct2.uc = pixelSampler.Get1D();
-            rs.direct2.u = pixelSampler.Get2D();
-            rs.direct3.uc = pixelSampler.Get1D();
-            rs.direct3.u = pixelSampler.Get2D();
-            rs.direct4.uc = pixelSampler.Get1D();
-            rs.direct4.u = pixelSampler.Get2D();
+            // Initialize remaining samples in _rs_
+            rs.indirect.uc = pixelSampler.Get1D();
+            rs.indirect.u = pixelSampler.Get2D();
+            rs.indirect.rr = pixelSampler.Get1D();
+            // Possibly initialize subsurface subsurface samples in _rs_
+            rs.haveSubsurface = haveSubsurface;
+            if (haveSubsurface) {
+                rs.subsurface.uc = pixelSampler.Get1D();
+                rs.subsurface.u = pixelSampler.Get2D();
+            }
+
+            // Store _RaySamples_ in pixel sample state
+            pixelSampleState.samples[w.pixelIndex] = rs;
+        });
+}
+
+// ReStirDIWavefrontPathIntegrator Sampler Methods
+void ReSTIRDIWavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth,
+                                                         int sampleIndex) {
+    auto generateSamples = [=](auto sampler) {
+        using ConcreteSampler = std::remove_reference_t<decltype(*sampler)>;
+        if constexpr (!std::is_same_v<ConcreteSampler, MLTSampler> &&
+                      !std::is_same_v<ConcreteSampler, DebugMLTSampler>)
+            GenerateRaySamples<ConcreteSampler>(wavefrontDepth, sampleIndex);
+    };
+    sampler.DispatchCPU(generateSamples);
+}
+
+template <typename ConcreteSampler>
+void ReSTIRDIWavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth,
+                                                         int sampleIndex) {
+    // Generate description string _desc_ for ray sample generation
+    std::string desc = std::string("Generate ray samples - ") + ConcreteSampler::Name();
+
+    RayQueue *rayQueue = CurrentRayQueue(wavefrontDepth);
+    ForAllQueued(
+        desc.c_str(), rayQueue, maxQueueSize, PBRT_CPU_GPU_LAMBDA(const RayWorkItem w) {
+            // Generate samples for ray segment at current sample index
+            // Find first sample dimension
+            int dimension = 6 * (1 + perSampleRisNumber) + 7 * w.depth;
+            if (haveSubsurface)
+                dimension += 3 * w.depth;
+
+            // Initialize _Sampler_ for pixel, sample index, and dimension
+            ConcreteSampler pixelSampler = *sampler.Cast<ConcreteSampler>();
+            Point2i pPixel = pixelSampleState.pPixel[w.pixelIndex];
+            pixelSampler.StartPixelSample(pPixel, sampleIndex, dimension);
+
+            // Initialize _RaySamples_ structure with sample values
+            RaySamples rs;
+            rs.direct.uc = pixelSampler.Get1D();
+            rs.direct.u = pixelSampler.Get2D();
+            for (int i = 0; i < perSampleRisNumber; ++i) {
+                float uc = pixelSampler.Get1D();
+                Point2f u = pixelSampler.Get2D();
+                risRngs.x[w.pixelIndex * i] = uc;
+                risRngs.y[w.pixelIndex * i] = u.x;
+                risRngs.z[w.pixelIndex * i] = u.y;
+            }
             // Initialize remaining samples in _rs_
             rs.indirect.uc = pixelSampler.Get1D();
             rs.indirect.u = pixelSampler.Get2D();
