@@ -388,7 +388,8 @@ struct SOA<RaySamples> {
 };
 
 struct ImageState {
-    DIReservoir diReservoir;
+    DIReservoir diReservoirA;
+    DIReservoir diReservoirB;
     Float shadowRayCount;
     Float exitAt1;
     Float exitAt2;

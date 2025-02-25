@@ -29,7 +29,8 @@ soa VisibleSurface;
 soa DIReservoir;
 
 soa ImageState {
-    DIReservoir diReservoir;
+    DIReservoir diReservoirA;
+    DIReservoir diReservoirB;
     Float shadowRayCount;
     Float exitAt1;
     Float exitAt2;

@@ -1151,9 +1151,12 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
                     sampleStageIndex = 8;
                     SampleSubsurface(wavefrontDepth);
                 }
-                //if (lastSampleIndex - sampleIndex <= 2)
-                    UpdateFilm();
+                UpdateFilm();
             }
+            if (swapOrder == 0)
+                swapOrder = 1;
+            else if (swapOrder == 1)
+                swapOrder = 0;
 
             // Copy updated film pixels to buffer for the display server.
             if (Options->useGPU && !Options->displayServer.empty())
@@ -1213,7 +1216,7 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
     int exitAt3Count = 0;
     for (int i = 0; i < totalPixelNumber; ++i)
     {
-        DIReservoir reservoir = imageState.diReservoir[i];
+        DIReservoir reservoir = imageState.diReservoirA[i];
         if (reservoir.M > 0)
             nonZeroCount++;
         Float shadowrayCount = imageState.shadowRayCount[i];
@@ -1260,7 +1263,8 @@ void ReSTIRDIWavefrontPathIntegrator::TraceShadowRays(int wavefrontDepth) {
 void ReSTIRDIWavefrontPathIntegrator::ResetDIReservoir() {
     ParallelFor(
         "Reset DI Reservoir", totalPixelNumber, PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
-            imageState.diReservoir[pixelIndex] = DIReservoir();
+            imageState.diReservoirA[pixelIndex] = DIReservoir();
+            imageState.diReservoirB[pixelIndex] = DIReservoir();
             imageState.shadowRayCount[pixelIndex] = 0;
             imageState.exitAt1[pixelIndex] = 0;
             imageState.exitAt2[pixelIndex] = 0;

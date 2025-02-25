@@ -672,12 +672,10 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                 return reservoir;
             };
 
-            auto temporalReuse = [&](DIReservoir reservoir) {
+            auto temporalReuse = [&](DIReservoir reservoir, DIReservoir lastFrameReservoir) {
                 // Sample light and enqueue shadow ray at intersection point
                 BxDFFlags flags = bsdf.Flags();
                 if (IsNonSpecular(flags)) {
-                    DIReservoir lastFrameReservoir = imageState.diReservoir[curPixelNumber];
-
                     if (lastFrameReservoir.M == 0)
                         return reservoir;
 
@@ -750,24 +748,27 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                         1 - (sqrtf(dx * dx + dy * dy) / (radius * sqrtf(2)));
 
                     if (nx < minX || nx >= maxX || ny < minY || ny >= maxY) {
-                        return;
+                        return false;
                     }
 
                     Point2i neighborPixel(nx, ny);
                     int neighborPixelNumber =
                         neighborPixel.y * resolution.x + neighborPixel.x;
-                    DIReservoir neighborReservoir =
-                        imageState.diReservoir[neighborPixelNumber];
+                    DIReservoir neighborReservoir;
+                    if (swapOrder == 0)
+                        neighborReservoir = imageState.diReservoirB[neighborPixelNumber];
+                    else if (swapOrder == 1)
+                        neighborReservoir = imageState.diReservoirA[neighborPixelNumber];
 
                     if (neighborReservoir.M == 0)
-                        return;
+                        return false;
 
                     pstd::optional<LightLiSample> ls = neighborReservoir.ls;
                     if (!ls || !ls->L || ls->pdf == 0)
-                        return;
+                        return false;
 
                     Float sampledLightP = neighborReservoir.sampledLightP;
-                    Vector3f wi = ls->wi;
+                    Vector3f wi = Normalize(ls->pLight.p() - ctx.p);
                     Vector3f wo = w.wo;
                     Normal3f normal = neighborReservoir.normal;
                     Float depth = neighborReservoir.depth;
@@ -778,7 +779,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                         Float exitAt1 = imageState.exitAt1[curPixelNumber];
                         exitAt1++;
                         imageState.exitAt1[curPixelNumber] = exitAt1;
-                        return;
+                        return false;
                     }
 
                     // ÀË¬dªk½u®t²§
@@ -787,7 +788,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                         Float exitAt2 = imageState.exitAt2[curPixelNumber];
                         exitAt2++;
                         imageState.exitAt2[curPixelNumber] = exitAt2;
-                        return;
+                        return false;
                     }
 
                     SampledSpectrum f = bsdf.f<ConcreteBxDF>(wo, wi);
@@ -795,65 +796,31 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                         Float exitAt3 = imageState.exitAt3[curPixelNumber];
                         exitAt3++;
                         imageState.exitAt3[curPixelNumber] = exitAt3;
-                        return;
+                        return false;
                     }
 
-                    // Compute path throughput and path PDFs for light sample
-                    SampledSpectrum beta = w.beta * f * AbsDot(wi, ns);
-                    PBRT_DBG("w.beta %f %f %f %f f %f %f %f %f dot %f\n", w.beta[0],
-                             w.beta[1], w.beta[2], w.beta[3], f[0], f[1], f[2], f[3],
-                             AbsDot(wi, ns));
-
-                    PBRT_DBG("me index %d depth %d beta %f %f %f %f f %f %f %f "
-                             "%f ls.L "
-                             "%f %f %f "
-                             "%f ls.pdf %f\n",
-                             w.pixelIndex, w.depth, beta[0], beta[1], beta[2], beta[3],
-                             f[0], f[1], f[2], f[3], ls->L[0], ls->L[1], ls->L[2],
-                             ls->L[3], ls->pdf);
-
-                    Float lightPDF = ls->pdf * sampledLightP;
-                    // This causes r_u to be zero for the shadow ray, so that
-                    // part of MIS just becomes a no-op.
-
-                    // TODO  use real light type
-                    // Float bsdfPDF = IsDeltaLight(light.Type()) ? 0.f :
-                    // bsdf.PDF<ConcreteBxDF>(wo, wi);
-                    Float bsdfPDF = bsdf.PDF<ConcreteBxDF>(wo, wi);
-                    SampledSpectrum r_u = w.r_u * bsdfPDF;
-                    SampledSpectrum r_l = w.r_u * lightPDF;
-
-                    // Enqueue shadow ray with tentative radiance contribution
-                    SampledSpectrum Ld = beta * ls->L;
-
-                    // Direct lighting and restir di
-                    // RIS source PDF
-                    Float source_p = lightPDF;
-
                     ////// RIS target PDF
-                    Float target_p = 0.0f;
-
-                    ////// RIS f(x)
-                    SampledSpectrum w_ld = ClampZero(ls->L) * f;
-
-                    target_p = spectrumToLuminance(w_ld, lambda);
+                    SampledSpectrum w_ld = ls->L * f * AbsDot(wi, ns);
+                    Float target_p = spectrumToLuminance(w_ld, lambda);
 
                     Float seed1 = w.time + w.pixelIndex + w.depth + w.n.x + w.n.y +
                                   w.n.z + w.wo.x + w.wo.y + w.wo.z + dx + dy;
                     Float rng = rng1D(seed1);
-                    float neighborWeight =
-                        distanceWeight * spectrumToLuminance(Ld, lambda);
+                    Float curWeight =
+                        target_p * neighborReservoir.W * neighborReservoir.M;
+                    printf("weight:%f, target p:%f, W:%f, M:%d\n", curWeight, target_p,
+                           neighborReservoir.W, neighborReservoir.M);
 
-                    reservoir.update(ls, rng, neighborWeight, neighborReservoir.M,
-                                     target_p, sampledLightP, normal, depth);
+                    reservoir.update(ls, rng, curWeight, neighborReservoir.M, target_p,
+                                     sampledLightP, normal, depth);
                     spatialSampleCount++;
+                    return true;
                 };
                 // Sample light and enqueue shadow ray at intersection point
                 BxDFFlags flags = bsdf.Flags();
                 if (IsNonSpecular(flags)) {
-                    
-
-                    for (int layer = 0; layer < radius; ++layer) {
+                    sampleReservoirWithOffset(0, 0);
+                    for (int layer = 1; layer <= radius; ++layer) {
                         int dy = -layer;
                         int dx = -layer;
                         // Go right
@@ -933,83 +900,23 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                 }
             };
 
-            BxDFFlags flags = bsdf.Flags();
-            if (false && IsNonSpecular(flags)) {
-                // Choose a light source using the _LightSampler_
-                LightSampleContext ctx(w.pi, w.n, ns);
-                if (IsReflective(flags) && !IsTransmissive(flags))
-                    ctx.pi = OffsetRayOrigin(ctx.pi, w.n, wo);
-                else if (IsTransmissive(flags) && IsReflective(flags))
-                    ctx.pi = OffsetRayOrigin(ctx.pi, w.n, -wo);
-                pstd::optional<SampledLight> sampledLight =
-                    lightSampler.Sample(ctx, raySamples.direct.uc);
-                if (!sampledLight)
-                    return;
-                Light light = sampledLight->light;
-
-                // Sample light source and evaluate BSDF for direct lighting
-                pstd::optional<LightLiSample> ls =
-                    light.SampleLi(ctx, raySamples.direct.u, lambda, true);
-                if (!ls || !ls->L || ls->pdf == 0)
-                    return;
-                Vector3f wi = ls->wi;
-                SampledSpectrum f = bsdf.f<ConcreteBxDF>(wo, wi);
-                if (!f)
-                    return;
-
-                // Compute path throughput and path PDFs for light sample
-                SampledSpectrum beta = w.beta * f * AbsDot(wi, ns);
-                PBRT_DBG("w.beta %f %f %f %f f %f %f %f %f dot %f\n", w.beta[0],
-                         w.beta[1], w.beta[2], w.beta[3], f[0], f[1], f[2], f[3],
-                         AbsDot(wi, ns));
-
-                PBRT_DBG(
-                    "me index %d depth %d beta %f %f %f %f f %f %f %f %f ls.L %f %f %f "
-                    "%f ls.pdf %f\n",
-                    w.pixelIndex, w.depth, beta[0], beta[1], beta[2], beta[3], f[0], f[1],
-                    f[2], f[3], ls->L[0], ls->L[1], ls->L[2], ls->L[3], ls->pdf);
-
-                Float lightPDF = ls->pdf * sampledLight->p;
-                // This causes r_u to be zero for the shadow ray, so that
-                // part of MIS just becomes a no-op.
-                Float bsdfPDF =
-                    IsDeltaLight(light.Type()) ? 0.f : bsdf.PDF<ConcreteBxDF>(wo, wi);
-                SampledSpectrum r_u = w.r_u * bsdfPDF;
-                SampledSpectrum r_l = w.r_u * lightPDF;
-                //printf("brdf %f, light %f\n", bsdfPDF, lightPDF);
-
-                // Enqueue shadow ray with tentative radiance contribution
-                SampledSpectrum Ld = beta * ls->L;
-                Ld *= (r_u + r_l).Average();
-                Ld /= lightPDF;
-                Ray ray = SpawnRayTo(w.pi, w.n, w.time, ls->pLight.pi, ls->pLight.n);
-                // Initialize _ray_ medium if media are present
-                if (haveMedia)
-                    ray.medium = Dot(ray.d, w.n) > 0 ? w.mediumInterface.outside
-                                                     : w.mediumInterface.inside;
-
-                shadowRayQueue->Push(ShadowRayWorkItem{ray, 1 - ShadowEpsilon, lambda, Ld,
-                                                       r_u, r_l, w.pixelIndex});
-
-                PBRT_DBG("w.index %d spawned shadow ray depth %d Ld %f %f %f %f "
-                         "new beta %f %f %f %f beta/uni %f %f %f %f Ld/uni %f %f %f %f\n",
-                         w.pixelIndex, w.depth, Ld[0], Ld[1], Ld[2], Ld[3], beta[0],
-                         beta[1], beta[2], beta[3], SafeDiv(beta, r_u)[0],
-                         SafeDiv(beta, r_u)[1], SafeDiv(beta, r_u)[2],
-                         SafeDiv(beta, r_u)[3], SafeDiv(Ld, r_u)[0], SafeDiv(Ld, r_u)[1],
-                         SafeDiv(Ld, r_u)[2], SafeDiv(Ld, r_u)[3]);
-            }
-            //return;
             DIReservoir curFrameReservoir;
-            curFrameReservoir =
-                addSampleToShadowRayReservoir(curFrameReservoir, perSampleRisNumber);
+            DIReservoir lastFrameReservoir;
+            if (swapOrder == 0)
+                lastFrameReservoir = imageState.diReservoirB[curPixelNumber];
+            else if (swapOrder == 1)
+                lastFrameReservoir = imageState.diReservoirA[curPixelNumber];
+
+            curFrameReservoir = addSampleToShadowRayReservoir(curFrameReservoir, perSampleRisNumber);
             addShadingRayFromReservoir(curFrameReservoir);
-            return;
-            curFrameReservoir = temporalReuse(curFrameReservoir);
-            imageState.diReservoir[curPixelNumber] = curFrameReservoir;
-            //curFrameReservoir = spatialReuse(curFrameReservoir, 5, 8);
+            //curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
+            //curFrameReservoir = spatialReuse(curFrameReservoir, 1, 5);
             //addShadingRayFromReservoir(curFrameReservoir);
-            //addShadingRayFromReservoir(curFrameReservoir);
+            if (swapOrder == 0)
+                imageState.diReservoirA[curPixelNumber] = curFrameReservoir;
+            else if (swapOrder == 1)
+                imageState.diReservoirB[curPixelNumber] = curFrameReservoir;
+            
         });
 }
 

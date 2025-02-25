@@ -225,6 +225,7 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
 
     SOA<ImageState> imageState;
     SOA<Point3f> risRngs;
+    int swapOrder = 0;
 };
 
 }  // namespace pbrt
