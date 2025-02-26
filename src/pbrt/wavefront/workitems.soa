@@ -33,7 +33,7 @@ soa DIReservoir{
     Point2f lightSampleRng;
     Float weightSum;
     Float W;
-    int M;
+    Float M;
     Normal3f normal;
     Float depth;
     Float targetPdf;

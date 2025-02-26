@@ -622,6 +622,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
 
                     for (int risCount = 0; risCount < sampleNumber; ++risCount)
                     {
+                        reservoir.M += 1.0f;
                         float lightRng = risRngs.x[w.pixelIndex * risCount];
                         pstd::optional<SampledLight> sampledLight =
                             lightSampler.Sample(ctx, lightRng);
@@ -657,7 +658,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                         Float seed4 = w.time + w.pixelIndex + w.depth + w.n.x + w.n.y +
                                       w.n.z + w.wo.x + w.wo.y + w.wo.z;
                         Float rng = rng1D(seed4);
-                        reservoir.update(rng, ctx, lightRng, lightSampleRng, curWeight, 1, target_p, w.n, w.depth);
+                        reservoir.update(rng, ctx, lightRng, lightSampleRng, curWeight, 0.0f, target_p, w.n, w.depth);
                     }
                     reservoir.updateWeight();
                 }
@@ -743,7 +744,6 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                 int maxY = film.PixelBounds().pMax.y;
                 int nx = pixel.x + dx;
                 int ny = pixel.y + dy;
-
                 if (nx < minX || nx >= maxX || ny < minY || ny >= maxY) {
                     return reservoir;
                 }
@@ -927,21 +927,21 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
             };
 
             DIReservoir curFrameReservoir;
-            /*DIReservoir lastFrameReservoir;
+            DIReservoir lastFrameReservoir;
             if (swapOrder == 0)
                 lastFrameReservoir = imageState.diReservoirB[curPixelNumber];
             else if (swapOrder == 1)
-                lastFrameReservoir = imageState.diReservoirA[curPixelNumber];*/
+                lastFrameReservoir = imageState.diReservoirA[curPixelNumber];
 
             curFrameReservoir = addSampleToShadowRayReservoir(curFrameReservoir, perSampleRisNumber);
             addShadingRayFromReservoir(curFrameReservoir);
-            /*curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
+            curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
+            curFrameReservoir = spatialReuse(curFrameReservoir, 1, 4);
+            addShadingRayFromReservoir(curFrameReservoir);
             if (swapOrder == 0)
                 imageState.diReservoirA[curPixelNumber] = curFrameReservoir;
             else if (swapOrder == 1)
                 imageState.diReservoirB[curPixelNumber] = curFrameReservoir;
-            curFrameReservoir = spatialReuse(curFrameReservoir, 1, 4);
-            addShadingRayFromReservoir(curFrameReservoir);*/
             
         });
 }

@@ -23,6 +23,7 @@
 #include <pbrt/wavefront/workitems.h>
 #include <pbrt/wavefront/workqueue.h>
 
+#include <filesystem>
 namespace pbrt {
 
 class BasicScene;
@@ -226,6 +227,7 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
     SOA<ImageState> imageState;
     SOA<Point3f> risRngs;
     int swapOrder = 0;
+    std::filesystem::path outputPath;
 };
 
 }  // namespace pbrt

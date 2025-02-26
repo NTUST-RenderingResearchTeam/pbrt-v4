@@ -40,6 +40,7 @@
 #include <cuda_runtime.h>
 #endif  // PBRT_BUILD_GPU_RENDERER
 
+
 namespace pbrt {
 
 STAT_MEMORY_COUNTER("Memory/Wavefront integrator pixel state", pathIntegratorBytes);
@@ -989,6 +990,16 @@ ReSTIRDIWavefrontPathIntegrator::ReSTIRDIWavefrontPathIntegrator(
         pathIntegratorBytes += endSize - startSize;
     }
 #endif  // PBRT_BUILD_GPU_RENDERER
+
+    std::filesystem::path path(film.GetFilename());
+    outputPath = path.stem();
+    if (!std::filesystem::exists(outputPath)) {
+        bool success = std::filesystem::create_directories(outputPath);
+        std::cout << "創建多層資料夾 " << outputPath << (success ? " 成功" : " 失敗")
+                  << std::endl;
+    } else {
+        std::cout << "多層資料夾 " << outputPath << " 已存在" << std::endl;
+    }
 }
 
 Float ReSTIRDIWavefrontPathIntegrator::Render() {
@@ -1163,6 +1174,20 @@ Float ReSTIRDIWavefrontPathIntegrator::Render() {
                 UpdateDisplayRGBFromFilm(pixelBounds);
 
             progress.Update();
+
+            if ((sampleIndex % 5 == 0) || sampleIndex == lastSampleIndex-1)
+            {
+                if (Options->useGPU)
+                    GPUWait();
+                ImageMetadata metadata;
+                camera.InitMetadata(&metadata);
+                metadata.renderTimeSeconds = timer.ElapsedSeconds();
+                metadata.samplesPerPixel = sampleIndex;
+
+                std::filesystem::path filePath =
+                    outputPath / (std::to_string(sampleIndex) + ".exr");
+                film.WriteImage(filePath.string(), metadata);
+            }
         }
 
         if (gui) {
