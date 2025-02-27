@@ -27,31 +27,31 @@ struct DIReservoir {
     Point2f lightSampleRng;
     Float weightSum = 0.f;
     Float W = 0.f;
-    Float M = 0;
+    int M = 0;
     // Check reuse correleation
     Normal3f normal;
     Float depth;
     Float targetPdf = 0.f;
 
     PBRT_CPU_GPU
-    void update(Float rng, LightSampleContext _ctx, Float _lightRng, Point2f _lightSampleRng, Float weight, Float M,
+    void update(Float rng, LightSampleContext _ctx, Float _lightRng, 
+                Point2f _lightSampleRng, Float W, Float M,
                 Float targetPDF, Normal3f normal, Float depth);
 
     PBRT_CPU_GPU
     void updateWeight();
-    
-    PBRT_CPU_GPU
-    void NanGate();
+
 };
 
 inline void DIReservoir::update(Float rng, LightSampleContext _ctx, Float _lightRng,
-                                Point2f _lightSampleRng, Float weight, Float _M,
+                                Point2f _lightSampleRng, Float _W, Float _M,
                                 Float _targetPdf,
                                 Normal3f _normal, Float _depth) {
+    // Clamp M from combine
+    _M = std::fminf(_M, 1024.0f * 8);
+    float weight = _W * _M * _targetPdf;
     weightSum += weight;
     M += _M;
-    /*if (M > 30)
-        M = 30;*/
 
     if (rng * weightSum <= weight) {
         ctx = _ctx;
@@ -64,19 +64,10 @@ inline void DIReservoir::update(Float rng, LightSampleContext _ctx, Float _light
 }
 
 inline void DIReservoir::updateWeight() {
-    if (M > 0 && targetPdf > 0.f) {
+    if (M > 0.0f && targetPdf > 0.0f) {
         W = (weightSum / M) / targetPdf;
     } else {
-        W = 0.f;
-    }
-}
-
-inline void DIReservoir::NanGate() {
-    if (IsNaN(weightSum) || IsNaN(W) || IsNaN(M))
-    {
-        weightSum = 0;
-        W = 0;
-        M = 0;
+        W = 0.0f;
     }
 }
 

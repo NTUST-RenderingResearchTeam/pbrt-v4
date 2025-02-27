@@ -620,13 +620,13 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                     else if (IsTransmissive(flags) && IsReflective(flags))
                         ctx.pi = OffsetRayOrigin(ctx.pi, w.n, -wo);
 
-                    for (int risCount = 0; risCount < sampleNumber; ++risCount)
+                    for (int risCount = 1; risCount <= sampleNumber; ++risCount)
                     {
-                        reservoir.M += 1.0f;
                         float lightRng = risRngs.x[w.pixelIndex * risCount];
                         pstd::optional<SampledLight> sampledLight =
                             lightSampler.Sample(ctx, lightRng);
                         if (!sampledLight) {
+                            reservoir.M += 1.0f;
                             continue;
                         }
                         Light light = sampledLight->light;
@@ -637,14 +637,15 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                         pstd::optional<LightLiSample> ls = light.SampleLi(ctx,
                             lightSampleRng, lambda, true);
                         if (!ls || !ls->L || ls->pdf == 0) {
+                            reservoir.M += 1.0f;
                             continue;
                         }
                         Vector3f wi = ls->wi;
                         SampledSpectrum f = bsdf.f<ConcreteBxDF>(wo, wi);
                         if (!f) {
+                            reservoir.M += 1.0f;
                             continue;
                         }
-
                         // Direct lighting and restir di
                         // RIS source PDF
                         Float lightPDF = ls->pdf * sampledLight->p;
@@ -654,11 +655,10 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                         SampledSpectrum w_ld = ls->L * f * AbsDot(wi, ns);
                         Float target_p = spectrumToLuminance(w_ld, lambda);
 
-                        float curWeight = target_p / source_p;
                         Float seed4 = w.time + w.pixelIndex + w.depth + w.n.x + w.n.y +
                                       w.n.z + w.wo.x + w.wo.y + w.wo.z;
                         Float rng = rng1D(seed4);
-                        reservoir.update(rng, ctx, lightRng, lightSampleRng, curWeight, 0.0f, target_p, w.n, w.depth);
+                        reservoir.update(rng, ctx, lightRng, lightSampleRng, 1.0f/source_p, 1.0f, target_p, w.n, w.depth);
                     }
                     reservoir.updateWeight();
                 }
@@ -723,11 +723,9 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                     Float seed1 = w.time + w.pixelIndex + w.depth + w.n.x + w.n.y +
                                   w.n.z + w.wo.x + w.wo.y + w.wo.z;
                     Float rng = rng1D(seed1);
-                    Float curWeight =
-                        target_p * lastFrameReservoir.W * lastFrameReservoir.M;
                     reservoir.update(rng, lastFrameReservoir.ctx,
                                      lastFrameReservoir.lightRng,
-                                     lastFrameReservoir.lightSampleRng, curWeight,
+                                     lastFrameReservoir.lightSampleRng, lastFrameReservoir.W,
                                      lastFrameReservoir.M, target_p, normal, depth);
                     reservoir.updateWeight();
                    //printf("last W:%f, last M:%d, last target p:%f, new weight:%f\n", lastFrameReservoir.W,
@@ -815,11 +813,10 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                 Float seed1 = w.time + w.pixelIndex + w.depth + w.n.x + w.n.y + w.n.z +
                               w.wo.x + w.wo.y + w.wo.z + dx + dy;
                 Float rng = rng1D(seed1);
-                Float curWeight = target_p * neighborReservoir.W * neighborReservoir.M;
                 //printf("weight:%f, target p:%f, W:%f, M:%d\n", curWeight, target_p,
                 //        neighborReservoir.W, neighborReservoir.M);
                 reservoir.update(rng, neighborReservoir.ctx, neighborReservoir.lightRng,
-                                 neighborReservoir.lightSampleRng, curWeight,
+                                 neighborReservoir.lightSampleRng, neighborReservoir.W,
                                  neighborReservoir.M, target_p, normal, depth);
                 spatialSampleCount++;
                 return reservoir;
@@ -935,13 +932,13 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
 
             curFrameReservoir = addSampleToShadowRayReservoir(curFrameReservoir, perSampleRisNumber);
             addShadingRayFromReservoir(curFrameReservoir);
-            curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
-            curFrameReservoir = spatialReuse(curFrameReservoir, 1, 4);
-            addShadingRayFromReservoir(curFrameReservoir);
-            if (swapOrder == 0)
-                imageState.diReservoirA[curPixelNumber] = curFrameReservoir;
-            else if (swapOrder == 1)
-                imageState.diReservoirB[curPixelNumber] = curFrameReservoir;
+            //curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
+            //curFrameReservoir = spatialReuse(curFrameReservoir, 1, 8);
+            //if (swapOrder == 0)
+            //    imageState.diReservoirA[curPixelNumber] = curFrameReservoir;
+            //else if (swapOrder == 1)
+            //    imageState.diReservoirB[curPixelNumber] = curFrameReservoir;
+            //addShadingRayFromReservoir(curFrameReservoir);
             
         });
 }
