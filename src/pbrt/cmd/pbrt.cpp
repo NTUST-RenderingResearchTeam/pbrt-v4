@@ -283,9 +283,11 @@ int main(int argc, char *argv[]) {
 
         // Render the scene
         if (Options->useGPU || Options->wavefront)
-            RenderWavefront(scene);
-            //RenderReSTIRDIWavefront(scene);
+            //RenderWavefront(scene);
+            RenderReSTIRDIWavefront(scene);
         else
+            //RenderWavefront(scene);
+            //RenderReSTIRDIWavefront(scene);
             RenderCPU(scene);
 
         LOG_VERBOSE("Memory used after post-render cleanup: %s", GetCurrentRSS());

@@ -86,7 +86,7 @@ class GWavefrontPathIntegrator {
                                         Transform movingFromCamera,
                                  int wavefrontDepth);
 
-    void UpdateFilm();
+    void UpdateFilm(DIReservoir reservoir);
 
     GWavefrontPathIntegrator() {};
     GWavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
@@ -223,6 +223,10 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
     int totalPixelNumber;
     const int shadowRayPerPath = 2;
     int perSampleRisNumber = 8;
+    int spatialSampleRadius = 16;
+    int maxSpatialSample = 8;
+
+
 
     SOA<ImageState> imageState;
     SOA<Point3f> risRngs;

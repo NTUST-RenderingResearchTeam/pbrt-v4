@@ -314,7 +314,6 @@ void GWavefrontPathIntegrator::EvaluateMaterialAndBSDF(MaterialEvalQueue *evalQu
                 // part of MIS just becomes a no-op.
                 Float bsdfPDF =
                     IsDeltaLight(light.Type()) ? 0.f : bsdf.PDF<ConcreteBxDF>(wo, wi);
-                printf("brdf %f, light %f\n", bsdfPDF, lightPDF);
                 SampledSpectrum r_u = w.r_u * bsdfPDF;
                 SampledSpectrum r_l = w.r_u * lightPDF;
 
@@ -381,20 +380,20 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
         desc.c_str(), queue, maxQueueSize,
         PBRT_CPU_GPU_LAMBDA(const MaterialEvalWorkItem<ConcreteMaterial> w) {
             auto rng1D = [](Float seed) {
-                // ±N¯BÂI¼ÆÂà´«¬°¾ã¼Æªí¥Ü
+                // ï¿½Nï¿½Bï¿½Iï¿½ï¿½ï¿½à´«ï¿½ï¿½ï¿½ï¿½Æªï¿½ï¿½ï¿½
                 union {
                     float f;
                     uint32_t i;
                 } u;
                 u.f = seed;
 
-                // Â²³æªº¾ã¼ÆÂø´ê¨ç¼Æ
+                // Â²ï¿½æªºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 uint32_t hash = u.i;
                 hash = ((hash >> 16) ^ hash) * 0x45d9f3b;
                 hash = ((hash >> 16) ^ hash) * 0x45d9f3b;
                 hash = (hash >> 16) ^ hash;
 
-                // Âà´«¨ì 0-1 ½d³ò
+                // ï¿½à´«ï¿½ï¿½ 0-1 ï¿½dï¿½ï¿½
                 Float rng = static_cast<float>(hash) / static_cast<float>(UINT32_MAX);
                 return rng;
             };
@@ -690,7 +689,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                     Normal3f normal = lastFrameReservoir.normal;
                     Float depth = lastFrameReservoir.depth;
 
-                    // ÀË¬d²`«×®t²§
+                    // ï¿½Ë¬dï¿½`ï¿½×®tï¿½ï¿½
                     float depth_diff = std::abs(depth - w.depth);
                     if (depth_diff > 0.001 * depth) {
                         Float exitAt1 = imageState.exitAt1[curPixelNumber];
@@ -699,7 +698,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                         return reservoir;
                     }
 
-                    // ÀË¬dªk½u®t²§
+                    // ï¿½Ë¬dï¿½kï¿½uï¿½tï¿½ï¿½
                     float normal_similarity = pbrt::Dot(normal, w.n);
                     if (normal_similarity < 0.9f) {
                         Float exitAt2 = imageState.exitAt2[curPixelNumber];
@@ -780,7 +779,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                 Normal3f normal = neighborReservoir.normal;
                 Float depth = neighborReservoir.depth;
 
-                // ÀË¬d²`«×®t²§
+                // ï¿½Ë¬dï¿½`ï¿½×®tï¿½ï¿½
                 float depth_diff = std::abs(depth - w.depth);
                 if (depth_diff > 0.001 * depth) {
                     Float exitAt1 = imageState.exitAt1[curPixelNumber];
@@ -789,7 +788,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                     return reservoir;
                 }
 
-                // ÀË¬dªk½u®t²§
+                // ï¿½Ë¬dï¿½kï¿½uï¿½tï¿½ï¿½
                 float normal_similarity = pbrt::Dot(normal, w.n);
                 if (normal_similarity < 0.9f) {
                     Float exitAt2 = imageState.exitAt2[curPixelNumber];
@@ -932,13 +931,13 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
 
             curFrameReservoir = addSampleToShadowRayReservoir(curFrameReservoir, perSampleRisNumber);
             addShadingRayFromReservoir(curFrameReservoir);
-            //curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
-            //curFrameReservoir = spatialReuse(curFrameReservoir, 1, 8);
-            //if (swapOrder == 0)
-            //    imageState.diReservoirA[curPixelNumber] = curFrameReservoir;
-            //else if (swapOrder == 1)
-            //    imageState.diReservoirB[curPixelNumber] = curFrameReservoir;
-            //addShadingRayFromReservoir(curFrameReservoir);
+            curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
+            curFrameReservoir = spatialReuse(curFrameReservoir, 5, 4);
+            if (swapOrder == 0)
+                imageState.diReservoirA[curPixelNumber] = curFrameReservoir;
+            else if (swapOrder == 1)
+                imageState.diReservoirB[curPixelNumber] = curFrameReservoir;
+            addShadingRayFromReservoir(curFrameReservoir);
             
         });
 }

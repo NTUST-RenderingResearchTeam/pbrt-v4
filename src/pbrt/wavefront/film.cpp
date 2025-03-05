@@ -10,7 +10,7 @@
 namespace pbrt {
 
 // WavefrontPathIntegrator Film Methods
-void GWavefrontPathIntegrator::UpdateFilm() {
+void GWavefrontPathIntegrator::UpdateFilm(DIReservoir reservoir) {
     ParallelFor(
         "Update film", maxQueueSize, PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
             // Check pixel against film bounds
@@ -35,7 +35,10 @@ void GWavefrontPathIntegrator::UpdateFilm() {
 
             } else
                 film.AddSample(pPixel, Lw, lambda, nullptr, filterWeight);
-        });
-}
 
+            /*if (film.Is<GPURestirFilm>())
+                film.Cast<GPURestirFilm>()->AddReservoir(pPixel, reservoir);*/
+        });
+    }
 }  // namespace pbrt
+
