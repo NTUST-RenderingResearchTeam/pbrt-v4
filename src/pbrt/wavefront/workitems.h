@@ -19,58 +19,6 @@
 
 namespace pbrt {
 
-struct DIReservoir {
-    DIReservoir() = default;
-
-    LightSampleContext ctx;
-    Float lightRng;
-    Point2f lightSampleRng;
-    Float weightSum = 0.f;
-    Float W = 0.f;
-    int M = 0;
-    // Check reuse correleation
-    Normal3f normal;
-    Float depth;
-    Float targetPdf = 0.f;
-
-    PBRT_CPU_GPU
-    void update(Float rng, LightSampleContext _ctx, Float _lightRng, 
-                Point2f _lightSampleRng, Float W, Float M,
-                Float targetPDF, Normal3f normal, Float depth);
-
-    PBRT_CPU_GPU
-    void updateWeight();
-
-};
-
-inline void DIReservoir::update(Float rng, LightSampleContext _ctx, Float _lightRng,
-                                Point2f _lightSampleRng, Float _W, Float _M,
-                                Float _targetPdf,
-                                Normal3f _normal, Float _depth) {
-    // Clamp M from combine
-    _M = std::fminf(_M, 1024.0f * 8);
-    float weight = _W * _M * _targetPdf;
-    weightSum += weight;
-    M += _M;
-
-    if (rng * weightSum <= weight) {
-        ctx = _ctx;
-        lightRng = _lightRng;
-        lightSampleRng = _lightSampleRng;
-        normal = _normal;
-        depth = _depth;
-        targetPdf = _targetPdf;
-    }
-}
-
-inline void DIReservoir::updateWeight() {
-    if (M > 0.0f && targetPdf > 0.0f) {
-        W = (weightSum / M) / targetPdf;
-    } else {
-        W = 0.0f;
-    }
-}
-
 // RaySamples Definition
 struct RaySamples {
     // RaySamples Public Members

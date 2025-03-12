@@ -1318,5 +1318,44 @@ void ReSTIRDIWavefrontPathIntegrator::DirectLight() {
         });
 }
 
+void ReSTIRDIWavefrontPathIntegrator::UpdateFilm() {
+    ParallelFor(
+        "Update film", maxQueueSize, PBRT_CPU_GPU_LAMBDA(int pixelIndex) {
+            // Check pixel against film bounds
+            Point2i pPixel = pixelSampleState.pPixel[pixelIndex];
+            if (!InsideExclusive(pPixel, film.PixelBounds()))
+                return;
+
+            // Compute final weighted radiance value
+            SampledSpectrum Lw = SampledSpectrum(pixelSampleState.L[pixelIndex]) *
+                                 pixelSampleState.cameraRayWeight[pixelIndex];
+
+            PBRT_DBG("Adding Lw %f %f %f %f at pixel (%d, %d)\n", Lw[0], Lw[1], Lw[2],
+                     Lw[3], pPixel.x, pPixel.y);
+            // Provide sample radiance value to film
+            SampledWavelengths lambda = pixelSampleState.lambda[pixelIndex];
+            Float filterWeight = pixelSampleState.filterWeight[pixelIndex];
+            if (initializeVisibleSurface) {
+                // Call _Film::AddSample()_ with _VisibleSurface_ for pixel sample
+                VisibleSurface visibleSurface =
+                    pixelSampleState.visibleSurface[pixelIndex];
+                film.AddSample(pPixel, Lw, lambda, &visibleSurface, filterWeight);
+
+            } else
+                film.AddSample(pPixel, Lw, lambda, nullptr, filterWeight);
+            if (film.Is<GPURestirFilm>())
+            {
+                Vector2i resolution = film.PixelBounds().Diagonal();
+                int curPixelNumber = pPixel.y * resolution.x + pPixel.x;
+                if (swapOrder == 0)
+                    film.Cast<GPURestirFilm>()->AddReservoir(
+                        pPixel, imageState.diReservoirA[curPixelNumber]);
+                else if (swapOrder == 1)
+                    film.Cast<GPURestirFilm>()->AddReservoir(
+                        pPixel, imageState.diReservoirB[curPixelNumber]);
+            }
+        });
+}
+
 }  // namespace pbrt
 

@@ -35,6 +35,55 @@
 #include <vector>
 
 namespace pbrt {
+struct DIReservoir {
+    DIReservoir() = default;
+
+    LightSampleContext ctx;
+    Float lightRng;
+    Point2f lightSampleRng;
+    Float weightSum = 0.f;
+    Float W = 0.f;
+    Float M = 0;
+    // Check reuse correleation
+    Normal3f normal;
+    Float depth;
+    Float targetPdf = 0.f;
+
+    PBRT_CPU_GPU
+    void update(Float rng, LightSampleContext _ctx, Float _lightRng,
+                Point2f _lightSampleRng, Float W, Float M, Float targetPDF,
+                Normal3f normal, Float depth);
+
+    PBRT_CPU_GPU
+    void updateWeight();
+};
+
+inline void DIReservoir::update(Float rng, LightSampleContext _ctx, Float _lightRng,
+                                Point2f _lightSampleRng, Float _W, Float _M,
+                                Float _targetPdf, Normal3f _normal, Float _depth) {
+    // Clamp M from combine
+    _M = std::fmin(_M, 1024.0f * 8);
+    float weight = _W * _M * _targetPdf;
+    weightSum += weight;
+    M += _M;
+
+    if (rng * weightSum <= weight) {
+        ctx = _ctx;
+        lightRng = _lightRng;
+        lightSampleRng = _lightSampleRng;
+        normal = _normal;
+        depth = _depth;
+        targetPdf = _targetPdf;
+    }
+}
+
+inline void DIReservoir::updateWeight() {
+    if (M > 0.0f && targetPdf > 0.0f) {
+        W = (weightSum / M) / targetPdf;
+    } else {
+        W = 0.0f;
+    }
+}
 
 // PixelSensor Definition
 class PixelSensor {
@@ -478,6 +527,95 @@ class RestirGBufferFilm : public FilmBase {
         VarianceEstimator<Float> rgbVariance[3];
     };
     // RestirGBufferFilm Private Members
+    AnimatedTransform outputFromRender;
+    bool applyInverse;
+    Array2D<Pixel> pixels;
+    const RGBColorSpace *colorSpace;
+    Float maxComponentValue;
+    bool writeFP16;
+    Float filterIntegral;
+    SquareMatrix<3> outputRGBFromSensorRGB;
+};
+
+/////////////////////////////////////////////GPURestirFilm//////////////////////////////////////////
+
+// GPURestirFilm Definition
+class GPURestirFilm : public FilmBase {
+  public:
+    // GPURestirFilm Public Methods
+    GPURestirFilm(FilmBaseParameters p, const AnimatedTransform &outputFromRender,
+                      bool applyInverse, const RGBColorSpace *colorSpace,
+                      Float maxComponentValue = Infinity, bool writeFP16 = true,
+                      Allocator alloc = {});
+
+    static GPURestirFilm *Create(const ParameterDictionary &parameters,
+                                     Float exposureTime,
+                                     const CameraTransform &cameraTransform,
+                                     Filter filter, const RGBColorSpace *colorSpace,
+                                     const FileLoc *loc, Allocator alloc);
+
+    PBRT_CPU_GPU
+    void AddSample(Point2i pFilm, SampledSpectrum L, const SampledWavelengths &lambda,
+                   const VisibleSurface *visibleSurface, Float weight);
+
+    PBRT_CPU_GPU
+    void AddReservoir(Point2i pFilm, DIReservoir reservoir);
+
+    PBRT_CPU_GPU
+    void AddSplat(Point2f p, SampledSpectrum v, const SampledWavelengths &lambda);
+
+    PBRT_CPU_GPU
+    RGB ToOutputRGB(SampledSpectrum L, const SampledWavelengths &lambda) const {
+        RGB cameraRGB = sensor->ToSensorRGB(L, lambda);
+        return outputRGBFromSensorRGB * cameraRGB;
+    }
+
+    PBRT_CPU_GPU
+    bool UsesVisibleSurface() const { return true; }
+
+    PBRT_CPU_GPU
+    RGB GetPixelRGB(Point2i p, Float splatScale = 1) const {
+        const Pixel &pixel = pixels[p];
+        RGB rgb(pixel.rgbSum[0], pixel.rgbSum[1], pixel.rgbSum[2]);
+
+        // Normalize pixel with weight sum
+        Float weightSum = pixel.weightSum;
+        if (weightSum != 0)
+            rgb /= weightSum;
+
+        // Add splat value at pixel
+        for (int c = 0; c < 3; ++c)
+            rgb[c] += splatScale * pixel.rgbSplat[c] / filterIntegral;
+
+        rgb = outputRGBFromSensorRGB * rgb;
+
+        return rgb;
+    }
+
+    void WriteImage(ImageMetadata metadata, Float splatScale = 1);
+    void WriteImage(std::string imgName, ImageMetadata metadata, Float splatScale = 1);
+    Image GetImage(ImageMetadata *metadata, Float splatScale = 1);
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU void ResetPixel(Point2i p) { std::memset(&pixels[p], 0, sizeof(Pixel)); }
+
+  private:
+    // GPURestirFilm::Pixel Definition
+    struct Pixel {
+        Pixel() = default;
+        double rgbSum[3] = {0., 0., 0.};
+        double weightSum = 0., gBufferWeightSum = 0.;
+        AtomicDouble rgbSplat[3];
+        Point3f pSum;
+        Float dzdxSum = 0, dzdySum = 0;
+        Normal3f nSum, nsSum;
+        Point2f uvSum;
+        double rgbAlbedoSum[3] = {0., 0., 0.};
+        VarianceEstimator<Float> rgbVariance[3];
+        Float reservoirM = 0.f;
+    };
+    // GPURestirFilm Private Members
     AnimatedTransform outputFromRender;
     bool applyInverse;
     Array2D<Pixel> pixels;

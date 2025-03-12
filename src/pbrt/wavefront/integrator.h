@@ -86,7 +86,7 @@ class GWavefrontPathIntegrator {
                                         Transform movingFromCamera,
                                  int wavefrontDepth);
 
-    void UpdateFilm(DIReservoir reservoir);
+    void UpdateFilm();
 
     GWavefrontPathIntegrator() {};
     GWavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
@@ -215,6 +215,8 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
     void SaveDirectLightContribution();
 
     void DirectLight();
+
+    void UpdateFilm();
 
     ReSTIRDIWavefrontPathIntegrator() {};
     ReSTIRDIWavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
