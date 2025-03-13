@@ -232,6 +232,7 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
 
     SOA<ImageState> imageState;
     SOA<Point3f> risRngs;
+    SOA<Point2f> spatialReuseRngs;
     int swapOrder = 0;
     std::filesystem::path outputPath;
 };

@@ -108,6 +108,11 @@ void ReSTIRDIWavefrontPathIntegrator::GenerateRaySamples(int wavefrontDepth,
                 risRngs.y[w.pixelIndex * i] = u.x;
                 risRngs.z[w.pixelIndex * i] = u.y;
             }
+            for (int i = 0; i < maxSpatialSample; ++i) {
+                Point2f xy = pixelSampler.Get2D();
+                spatialReuseRngs.x[w.pixelIndex * i] = xy.x;
+                spatialReuseRngs.y[w.pixelIndex * i] = xy.y;
+            }
             // Initialize remaining samples in _rs_
             rs.indirect.uc = pixelSampler.Get1D();
             rs.indirect.u = pixelSampler.Get2D();

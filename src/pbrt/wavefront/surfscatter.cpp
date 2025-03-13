@@ -733,8 +733,8 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                 return reservoir;
             };
 
-            auto sampleReservoirWithOffset = [&](DIReservoir reservoir, int dx, int dy,
-                                                 int &spatialSampleCount) {
+            auto sampleReservoirWithOffset = [&](DIReservoir reservoir, int dx, int dy
+                                                 ) {
                 int minX = film.PixelBounds().pMin.x;
                 int minY = film.PixelBounds().pMin.y;
                 int maxX = film.PixelBounds().pMax.x;
@@ -818,43 +818,21 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                                  neighborReservoir.lightSampleRng, neighborReservoir.W,
                                  neighborReservoir.M, target_p, normal, depth);
                 reservoir.updateWeight();
-                spatialSampleCount++;
                 return reservoir;
             };
             
-            auto spatialReuse = [&](DIReservoir reservoir, int radius, int reuseSampleNumber) {
-                int spatialSampleCount = 0;
+            auto spatialReuse = [&](DIReservoir reservoir) {
                 // Sample light and enqueue shadow ray at intersection point
                 BxDFFlags flags = bsdf.Flags();
                 if (IsNonSpecular(flags)) {
-                    for (int layer = 1; layer <= radius; ++layer) {
-                        int dy = -layer;
-                        int dx = -layer;
-                        // Go right
-                        while (spatialSampleCount < reuseSampleNumber && dx < layer)
-                        {
-                            reservoir = sampleReservoirWithOffset(reservoir, dx, dy,
-                                                      spatialSampleCount);
-                            dx++;
-                        }
-                        // Go Down
-                        while (spatialSampleCount < reuseSampleNumber && dy < layer) {
-                            reservoir = sampleReservoirWithOffset(reservoir, dx, dy,
-                                                      spatialSampleCount);
-                            dy++;
-                        }
-                        // Go Left
-                        while (spatialSampleCount < reuseSampleNumber && dx > -layer) {
-                            reservoir = sampleReservoirWithOffset(reservoir, dx, dy,
-                                                      spatialSampleCount);
-                            dx--;
-                        }
-                        // Go Top
-                        while (spatialSampleCount < reuseSampleNumber && dy > -layer) {
-                            reservoir = sampleReservoirWithOffset(reservoir, dx, dy,
-                                                      spatialSampleCount);
-                            dy--;
-                        }
+                    for (int srCount = 1; srCount <= maxSpatialSample; ++srCount) {
+                        Float xRng = spatialReuseRngs.x[w.pixelIndex * srCount];
+                        Float yRng = spatialReuseRngs.y[w.pixelIndex * srCount];
+
+                        int dx = static_cast<int>((xRng - 0.5f) * spatialSampleRadius);
+                        int dy = static_cast<int>((yRng - 0.5f) * spatialSampleRadius);
+
+                        reservoir = sampleReservoirWithOffset(reservoir, dx, dy);
                     }
                 }
                 return reservoir;
@@ -932,7 +910,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
             curFrameReservoir = addSampleToShadowRayReservoir(curFrameReservoir, perSampleRisNumber);
             addShadingRayFromReservoir(curFrameReservoir);
             curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
-            curFrameReservoir = spatialReuse(curFrameReservoir, 5, 8);
+            /*curFrameReservoir = spatialReuse(curFrameReservoir);*/
             if (swapOrder == 0)
                 imageState.diReservoirA[curPixelNumber] = curFrameReservoir;
             else if (swapOrder == 1)
