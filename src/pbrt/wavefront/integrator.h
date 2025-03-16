@@ -225,7 +225,7 @@ class ReSTIRDIWavefrontPathIntegrator : public GWavefrontPathIntegrator {
     int totalPixelNumber;
     const int shadowRayPerPath = 2;
     int perSampleRisNumber = 8;
-    int spatialSampleRadius = 16;
+    int spatialSampleRadius = 64;
     int maxSpatialSample = 8;
 
 

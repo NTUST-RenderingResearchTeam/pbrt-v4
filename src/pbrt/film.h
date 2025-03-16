@@ -43,7 +43,7 @@ struct DIReservoir {
     Point2f lightSampleRng;
     Float weightSum = 0.f;
     Float W = 0.f;
-    Float M = 0;
+    Float M = 0.f;
     // Check reuse correleation
     Normal3f normal;
     Float depth;
@@ -62,7 +62,7 @@ inline void DIReservoir::update(Float rng, LightSampleContext _ctx, Float _light
                                 Point2f _lightSampleRng, Float _W, Float _M,
                                 Float _targetPdf, Normal3f _normal, Float _depth) {
     // Clamp M from combine
-    _M = std::fmin(_M, 1024.0f * 8);
+    _M = std::fmin(_M, 1024.0f * 8.f);
     float weight = _W * _M * _targetPdf;
     weightSum += weight;
     M += _M;
@@ -614,6 +614,8 @@ class GPURestirFilm : public FilmBase {
         double rgbAlbedoSum[3] = {0., 0., 0.};
         VarianceEstimator<Float> rgbVariance[3];
         Float reservoirM = 0.f;
+        Float reservoirW = 0.f;
+        Float reservoirWsum = 0.f;
     };
     // GPURestirFilm Private Members
     AnimatedTransform outputFromRender;

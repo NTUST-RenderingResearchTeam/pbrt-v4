@@ -1195,7 +1195,9 @@ void GPURestirFilm::AddSample(Point2i pFilm, SampledSpectrum L,
 
 void GPURestirFilm::AddReservoir(Point2i pFilm, DIReservoir reservoir) {
     Pixel &p = pixels[pFilm];
-    p.reservoirM = reservoir.W;
+    p.reservoirM = reservoir.M;
+    p.reservoirW = reservoir.W;
+    p.reservoirWsum = reservoir.weightSum;
 }
 
 GPURestirFilm::GPURestirFilm(FilmBaseParameters p,
@@ -1283,7 +1285,10 @@ Image GPURestirFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
                  "RelativeVariance.R",
                  "RelativeVariance.G",
                  "RelativeVariance.B",
-                 "Reservoir.M"});
+                 "Reservoir.M",
+                 "Reservoir.W",
+                 "Reservoir.Wsum"});
+
 
     ImageChannelDesc rgbDesc = image.GetChannelDesc({"R", "G", "B"});
     ImageChannelDesc pDesc = image.GetChannelDesc({"P.X", "P.Y", "P.Z"});
@@ -1297,8 +1302,10 @@ Image GPURestirFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
         image.GetChannelDesc({"Variance.R", "Variance.G", "Variance.B"});
     ImageChannelDesc relVarianceDesc = image.GetChannelDesc(
         {"RelativeVariance.R", "RelativeVariance.G", "RelativeVariance.B"});
-    ImageChannelDesc reservoirDesc = image.GetChannelDesc(
+    ImageChannelDesc reservoirMDesc = image.GetChannelDesc(
         {"Reservoir.M"});
+    ImageChannelDesc reservoirWDesc = image.GetChannelDesc({"Reservoir.W"});
+    ImageChannelDesc reservoirWsumDesc = image.GetChannelDesc({"Reservoir.Wsum"});
     std::atomic<int> nClamped{0};
     ParallelFor2D(pixelBounds, [&](Point2i p) {
         Pixel &pixel = pixels[p];
@@ -1360,7 +1367,9 @@ Image GPURestirFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
                           {pixel.rgbVariance[0].RelativeVariance(),
                            pixel.rgbVariance[1].RelativeVariance(),
                            pixel.rgbVariance[2].RelativeVariance()});
-        image.SetChannels(pOffset, reservoirDesc, {pixel.reservoirM});
+        image.SetChannels(pOffset, reservoirMDesc, {pixel.reservoirM});
+        image.SetChannels(pOffset, reservoirWDesc, {pixel.reservoirW});
+        image.SetChannels(pOffset, reservoirWsumDesc, {pixel.reservoirWsum});
     });
 
     if (nClamped.load() > 0)

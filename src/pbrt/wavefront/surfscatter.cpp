@@ -817,7 +817,6 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                 reservoir.update(rng, neighborReservoir.ctx, neighborReservoir.lightRng,
                                  neighborReservoir.lightSampleRng, neighborReservoir.W,
                                  neighborReservoir.M, target_p, normal, depth);
-                reservoir.updateWeight();
                 return reservoir;
             };
             
@@ -834,6 +833,7 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
 
                         reservoir = sampleReservoirWithOffset(reservoir, dx, dy);
                     }
+                    reservoir.updateWeight();
                 }
                 return reservoir;
             };
@@ -908,9 +908,9 @@ void ReSTIRDIWavefrontPathIntegrator::EvaluateMaterialAndBSDF(
                 lastFrameReservoir = imageState.diReservoirA[curPixelNumber];
 
             curFrameReservoir = addSampleToShadowRayReservoir(curFrameReservoir, perSampleRisNumber);
-            addShadingRayFromReservoir(curFrameReservoir);
+            //addShadingRayFromReservoir(curFrameReservoir);
             curFrameReservoir = temporalReuse(curFrameReservoir, lastFrameReservoir);
-            /*curFrameReservoir = spatialReuse(curFrameReservoir);*/
+            curFrameReservoir = spatialReuse(curFrameReservoir);
             if (swapOrder == 0)
                 imageState.diReservoirA[curPixelNumber] = curFrameReservoir;
             else if (swapOrder == 1)
