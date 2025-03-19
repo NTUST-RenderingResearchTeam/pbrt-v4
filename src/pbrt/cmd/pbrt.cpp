@@ -287,8 +287,8 @@ int main(int argc, char *argv[]) {
             RenderReSTIRDIWavefront(scene);
         else
             //RenderWavefront(scene);
-            //RenderReSTIRDIWavefront(scene);
-            RenderCPU(scene);
+            RenderReSTIRDIWavefront(scene);
+            //RenderCPU(scene);
 
         LOG_VERBOSE("Memory used after post-render cleanup: %s", GetCurrentRSS());
         // Clean up after rendering the scene
