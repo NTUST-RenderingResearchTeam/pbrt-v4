@@ -972,28 +972,28 @@ std::unique_ptr<ReSTIRIntegrator> ReSTIRIntegrator::Create(
     int fps = parameters.GetOneInt("fps", 24);
     RestirDIParameter restirDISetting;
 
-    std::string restirStrategy = parameters.GetOneString("restirdimode", "none");
-    if(restirStrategy == "temporal"){
+    std::string restirDIStrategy = parameters.GetOneString("restirdimode", "none");
+    if(restirDIStrategy == "temporal"){
         restirDISetting.isTemporal = true;
         restirDISetting.isSpatial = false;
     }
-    else if(restirStrategy == "spatial"){
+    else if(restirDIStrategy == "spatial"){
         restirDISetting.isTemporal = false;
         restirDISetting.isSpatial = true;
     }
-    else if(restirStrategy == "spatiotemporal"){
+    else if(restirDIStrategy == "spatiotemporal"){
         restirDISetting.isTemporal = true;
         restirDISetting.isSpatial = true;
         // restirDISetting.isSpatiotemporal = true;
     }
-    else if(restirStrategy == "none"){
+    else if(restirDIStrategy == "none"){
         restirDISetting.isTemporal = false;
         restirDISetting.isSpatial = false;
         // restirDISetting.isSpatiotemporal = true;
     }
     else{
-        Error(R"(ReSTIR mode "%s" unknown. Using "Spatiotemporal".)",
-              restirStrategy.c_str());
+        Error(R"(ReSTIR-DI mode "%s" unknown. Using "Spatiotemporal".)",
+              restirDIStrategy.c_str());
         restirDISetting.isTemporal = true;
         restirDISetting.isSpatial = true;
         // restirDISetting.isSpatiotemporal = true;
@@ -1012,26 +1012,26 @@ std::unique_ptr<ReSTIRIntegrator> ReSTIRIntegrator::Create(
 
     RestirPTParameter restirPTSetting;
 
-    std::string restirStrategy = parameters.GetOneString("restirptmode", "none");
-    if(restirStrategy == "temporal"){
+    std::string restirPTStrategy = parameters.GetOneString("restirptmode", "none");
+    if(restirPTStrategy == "temporal"){
         restirPTSetting.isTemporal = true;
         restirPTSetting.isSpatial = false;
     }
-    else if(restirStrategy == "spatial"){
+    else if(restirPTStrategy == "spatial"){
         restirPTSetting.isTemporal = false;
         restirPTSetting.isSpatial = true;
     }
-    else if(restirStrategy == "spatiotemporal"){
+    else if(restirPTStrategy == "spatiotemporal"){
         restirPTSetting.isTemporal = true;
         restirPTSetting.isSpatial = true;
     }
-    else if(restirStrategy == "none"){
+    else if(restirPTStrategy == "none"){
         restirPTSetting.isTemporal = false;
         restirPTSetting.isSpatial = false;
     }
     else{
-        Error(R"(ReSTIR mode "%s" unknown. Using "Spatiotemporal".)",
-              restirStrategy.c_str());
+        Error(R"(ReSTIR-PT mode "%s" unknown. Using "Spatiotemporal".)",
+              restirPTStrategy.c_str());
         restirDISetting.isTemporal = true;
         restirDISetting.isSpatial = true;
         // restirDISetting.isSpatiotemporal = true;
