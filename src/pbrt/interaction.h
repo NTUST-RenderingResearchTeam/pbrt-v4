@@ -89,7 +89,7 @@ class Interaction {
     std::string ToString() const;
 
     PBRT_CPU_GPU
-    Point3f OffsetRayOrigin(Vector3f w) const { return pbrt::OffsetRayOrigin(pi, n, w); }
+    Point3f OffsetRayOrigin(Vector3f w) const { return pbrt::OffsetRayOrigin(pi, (Dot(n, wo) < 0.f) ? -n : n, w); }
 
     PBRT_CPU_GPU
     Point3f OffsetRayOrigin(Point3f pt) const { return OffsetRayOrigin(pt - p()); }
@@ -179,7 +179,7 @@ class SurfaceInteraction : public Interaction {
         if (flipNormal) {
             n *= -1;
             shading.n *= -1;
-        }
+        }    
     }
 
     PBRT_CPU_GPU
@@ -196,11 +196,12 @@ class SurfaceInteraction : public Interaction {
         // Compute _shading.n_ for _SurfaceInteraction_
         shading.n = ns;
         DCHECK_NE(shading.n, Normal3f(0, 0, 0));
-        if (orientationIsAuthoritative)
+        if (orientationIsAuthoritative){
             n = FaceForward(n, shading.n);
-        else
+        }
+        else{
             shading.n = FaceForward(shading.n, n);
-
+        }
         // Initialize _shading_ partial derivative values
         shading.dpdu = dpdus;
         shading.dpdv = dpdvs;
@@ -222,6 +223,7 @@ class SurfaceInteraction : public Interaction {
         areaLight = area;
         instanceLightIndexs = instanceIndexs;
         CHECK_GE(Dot(n, shading.n), 0.);
+
         // Set medium properties at surface intersection
         if (primMediumInterface && primMediumInterface->IsMediumTransition())
             mediumInterface = primMediumInterface;

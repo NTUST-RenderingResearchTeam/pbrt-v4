@@ -117,27 +117,47 @@ class RayIntegrator : public ImageTileIntegrator {
 // WavefrontIntegrator Definition
 class WavefrontIntegrator : public Integrator {
   protected:
+
+    // This will be replace by reservoir & GBuffer swapchain in ReSTIR Integrator, need rearchitecture.
     // Buffer for passing data between stage
     struct RayStageBuffer {
         RayStageBuffer() = default;
         pstd::optional<ShapeIntersection> isect = {};
         pstd::optional<BSDF> bsdf = {};
         
+        // Save by light sample or random seed?
         pstd::optional<SampledLight> sampledLight = {};
         pstd::optional<LightLiSample> ls = {};
-        SampledSpectrum f = SampledSpectrum(0.f);
 
+        Float u;      // Sampled Light
+        Point2f uv;   // Light sample
     };
 
     // Buffer for passing data between Bounce
     struct RayBounceBuffer/*RayDepthBuffer*/ {
         RayBounceBuffer() = default;
         pstd::optional<RayDifferential> ray = {};
-        Float p_b, etaScale = 1;
-        bool specularBounce = false, anyNonSpecularBounces = false, rayFinished = false;
-        LightSampleContext prevIntrCtx;
+        Point2i pPixel = Point2i(0,0);
+        Float etaScale = 1;
+        // current bounce's pdf by Sample_f(), for MIS calculate
+        Float ray_pdf = 1.0f;
+        // is current bounce spawn by full specular surface
+        bool specularBounce = false;
+        bool anyNonSpecularBounces = false;
+        bool rayFinished = false;
+        pstd::optional<ShapeIntersection> prevIsect = {};
+        pstd::optional<RayDifferential> prevRay = {};
+        // pstd::optional<BSDF> prevBsdf;
         int depth = 0;
         SampledSpectrum beta = SampledSpectrum(1.f);
+
+        // for ReSTIR-PT
+        // beta when reconnect vertex find
+        SampledSpectrum rc_beta = SampledSpectrum(1.f);
+
+        pstd::optional<ShapeIntersection> prev_prevIsect = {};
+        pstd::optional<RayDifferential> prev_prevRay = {};
+        // pstd::optional<BSDF> prev_prevBsdf;
 
         SampledWavelengths lambda;
         SampledSpectrum weight = SampledSpectrum(1.f);
@@ -148,6 +168,7 @@ class WavefrontIntegrator : public Integrator {
         // maybe record pPixel mapping to skip pixel that already finished 
         // Point2i pPixel;
         // buffer for output to image
+        // * PT ReSTIR don't use this
         SampledSpectrum L = SampledSpectrum(0.f);
     };
   public:
@@ -171,18 +192,19 @@ class WavefrontIntegrator : public Integrator {
     int fps;
 
     // RayBuffer for wavefront
-    Array2D<RayStageBuffer> rayStageBuffers;
+    Array2D<RayStageBuffer> rayStageBuffers;  // ReSTIR Integrator not using
     Array2D<RayBounceBuffer> rayBounceBuffers;
 
     Camera camera;
     Sampler samplerPrototype;
-    bool regularize;
+    bool regularize = false;
     int maxDepth;
     LightSampler lightSampler;
 
-    bool disableBSDFLightSample = true;
+    bool disableBSDFLightSample = false;
+    bool disableSampleFromLightSample = false;
 
-    bool disableFilmGBuffer = false;
+    bool disableFilmGBuffer = true;
 
     //for motion vector
     Point3f currentPCamera;
@@ -212,13 +234,13 @@ class WavefrontPathIntegrator : public WavefrontIntegrator {
 class ReSTIRIntegrator : public WavefrontIntegrator {
   public:
 
-      struct RestirParameter {
-      RestirParameter() = default;
+    struct RestirDIParameter {
+      RestirDIParameter() = default;
 
-      bool reUseVisibility = false;
-      bool unbiased = true;
       // local light DI RIS sample count
-      int numLocalLightDISample = 8;
+      int numLocalLightSample = 8;
+
+      ////////////////////ReSTIR DI's parameter////////////////////
 
       // normal similarity threshold
       Float Nthreshold = 0.5;
@@ -226,20 +248,77 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
       Float Dthreshold = 0.1;
 
       //spatial parameter
-      bool isSpatial = true;
+      bool isSpatial = false;
       Float spatialRadius = 32.0f;
       int numSpatialSamples = 1;
       Float maxSpatialDistance = 32.f;
 
       //temporal parameter
-      bool isTemporal = true;
+      bool isTemporal = false;
       int maxAge = 20;
       int historyLimit = 20;
 
       bool isSpatiotemporal = false;
+
+      // unbiased vis setting: 000000001
+      bool risCheckVis = false;
+      bool risDiscardInVis = false;
+      bool spatialCheckVis = false;
+      bool spatialForceCheckVis = false;
+      bool spatialDiscardInVis = false;
+      bool temporalCheckVis = false;
+      bool temporalForceCheckVis = false;
+      bool temporalDiscardInVis = false;
+      bool finalVisCheck = true;
+
+      ////////////////////ReSTIR DI's parameter////////////////////
+
+
+
+      
     };
+
+    struct RestirPTParameter {
+      RestirPTParameter() = default;
+
+      // local light DI RIS sample count
+      int numLocalLightSample = 8;
+
+      ////////////////////ReSTIR PT's parameter////////////////////
+
+      // normal similarity threshold
+      Float Nthreshold = 0.5;
+      // depth similarity threshold
+      Float Dthreshold = 0.1;
+
+      //spatial parameter
+      bool isSpatial = false;
+      Float spatialRadius = 20.0f;
+      int numSpatialSamples = 3;
+      // Float maxSpatialDistance = 32.f;
+
+      //temporal parameter
+      bool isTemporal = false;
+      int maxAge = 20;
+      int historyLimit = 5;
+
+      bool isSpatiotemporal = false;
+
+      ////////////////////ReSTIR PT's parameter////////////////////
+
+      // shift mapping mode
+
+      bool rcVisibility = true;
+      float jacobianThreshold = 10.f;
+
+      
+    };
+
+    bool enable_SS_ReSTIR_DI = false;  // enable screen space ReSTIR DI
+    bool enableNEE = true;
+    bool enableRR = false;
     // RayIntegrator Public Methods
-    ReSTIRIntegrator(int fps, int maxDepth, RestirParameter restirSetting, Camera camera, Sampler sampler, Primitive aggregate,
+    ReSTIRIntegrator(int fps, int maxDepth, RestirDIParameter restirDISetting, RestirPTParameter restirPTSetting, Camera camera, Sampler sampler, Primitive aggregate,
                   std::vector<Light> lights, const std::string &lightSampleStrategy, bool regularize);
 
     static std::unique_ptr<ReSTIRIntegrator> Create(const ParameterDictionary &parameters,
@@ -248,63 +327,178 @@ class ReSTIRIntegrator : public WavefrontIntegrator {
                                                   std::vector<Light> lights,
                                                   const FileLoc *loc);
 
+    // Buffer for passing data between frame
+    struct GBuffer {
+        GBuffer() = default;
+
+        pstd::optional<ShapeIntersection> isect = {};
+        pstd::optional<BSDF> bsdf = {};
+
+        pstd::optional<RayDifferential> ray = {};
+        bool specularBounce = false;
+
+        Vector3f test_wi;
+    };
+
     struct DIReservoir {
         DIReservoir() = default;
 
+        // Can save light sample or random seed
         pstd::optional<SampledLight> sampledLight = {};
         pstd::optional<LightLiSample> ls = {};
+        // Float u;
         Point2f uv;
+
+        // (optinal)
+        // unnormalize target PDF (DI * BSDF), we can save f when sample light to improve preformance
+        SampledSpectrum w_ld = SampledSpectrum(0.0f);   
+
 
         bool visibility = true;
         bool isVisCheck = false;
         Float targetPdf = 0.f;
         Float weightSum = 0.f;
-        Float W = 0.f;
-        Point2i spatialDistance = Point2i(0,0);
+        Float W = 0.f;          // (optinal) this can merge into weightSum
         int M = 0;
+
+        Point2i spatialDistance = Point2i(0,0);
         int age = 0;
     };
 
+    // connect Case 1: like ReSTIR-DI
+    // x_k-1(*) -> x_k(light)
+    // rcVertex: x_k(light)
 
+    // connect Case 2: like ReSTIR-GI
+    // x_k-1(rough) -> x_k(rough) -> x_k+1(light)
+    // rcVertex: x_k(rough)
 
-    bool checkNormalSimilar(Normal3f n1, Normal3f n2, float threshold);
-    bool checkDepthSimilar(Float d1, Float d2, float threshold);
-    bool checkMaterialSimilar(BSDF m1, BSDF m2, float threshold);
+    // connect Case 3:
+    // x_k-1(rough) -> x_k(rough) -> x_k+1(*)
+    // rcVertex: x_k(rough)
+    struct ReconnectData{
+      ReconnectData() = default;
+      // random seed
+      // Point2i p;
+      // int sampleIndex = 0;
+      // int dimension = 0;
+      // for case 1: like ReSTIR-DI
+      SampledLight sampledLight;
+      ShapeIntersection rc_isect;
+      // pstd::optional<BSDF> rc_bsdf = {};
+      RayDifferential ray;
+      ShapeIntersection rc_Le_isect;
+
+      Point2f uLight;
+      Vector3f rc_wi;
+      Float lightPdf = 0.0f;
+      SampledSpectrum reconnectIrradiance;
+
+      int pathLength = 0;
+      int rcType = 0;
+
+      bool isHitEmissive = false;
+      bool isNEE = false;
+    };
+
+    struct PTReservoir {
+        PTReservoir() = default;
+
+        //////////////// necessary data for RIS ////////////////
+        SampledSpectrum target = SampledSpectrum(0.0f);
+
+        // unbiased contribution weight W or resampling weights w
+        // we can convert between W and w with finalResampling() or prepareMerge()
+        Float W = 0.f;
+        //////////////// necessary data for RIS ////////////////
+
+        ReconnectData rc;
+        Vector3f test_wi;
+
+        int M = 0;
+
+        int age = 0;
+    };
+
+    
+
+    struct RandomSeedCache{
+      Point2i p;
+      int sampleIndex = 0;
+      int dimension = 0;
+    };
+
+    bool checkNormalSimilar(Normal3f n1, Normal3f n2, Float threshold);
+    bool checkDepthSimilar(Float d1, Float d2, Float threshold);
+    bool checkMaterialSimilar(BSDF m1, BSDF m2, Float threshold);
 
     // update reservoir weight and return if it should do swap
-    bool streamReservoir(DIReservoir &reservoir, float targetPdf, float sourcePdf, Sampler &sampler);
+    bool streamReservoir(DIReservoir &reservoir, Float targetPdf, Float sourcePdf, Sampler &sampler);
+
+    bool streamReservoir(PTReservoir &reservoir, Float targetPdf, Float sourcePdf, Sampler &sampler);
 
     // combine reservoir and return if it should do swap
-    bool combineReservoir(DIReservoir &dst, const DIReservoir &src, float targetPdf, Sampler &sampler);
+    bool combineReservoir(DIReservoir &dst, const DIReservoir &src, Float targetPdf, Sampler &sampler, bool resetVis = true);
 
-    void finalResampling(DIReservoir &reservoir, const RayStageBuffer &rsBuffer, bool checkVisibility, bool discardIfInvisible);
+    bool combineReservoir(PTReservoir &dst, const PTReservoir &src, Float targetPdf, Float misWeight, Float jacobian, Sampler &sampler, bool resetVis = true);
+
+    void finalResampling(DIReservoir &reservoir, const GBuffer &gBuffer, bool checkVis, bool forceVisCheck, bool discardIfInvisible);
+
+    // convert weightSum to W in reservoir.weight
+    void finalResampling(PTReservoir &reservoir);
+
+    void prepareMerge(PTReservoir &reservoir);
 
     void storeVisibility(DIReservoir &reservoir, bool visibility, bool discardIfInvisible);
+
+    void IntersectSurfaces(RayBounceBuffer &rbBuffer, GBuffer &gBuffer);
+
+    void HitEmittedLight(RayBounceBuffer &rbBuffer, ReconnectData &rc, GBuffer &gBuffer, DIReservoir& diReservoir, PTReservoir &ptReservoir, ScratchBuffer &scratchBuffer, Sampler &sampler, RandomSeedCache &rand);
+
+    void GetBSDF(RayBounceBuffer &rbBuffer, GBuffer &gBuffer, ScratchBuffer &scratchBuffer, Sampler &sampler);
+
     // sample light with WRS
-    void SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir &reservoir, Sampler &sampler);
+    void SampleLights(RayBounceBuffer &rbBuffer, GBuffer &gBuffer, Sampler &sampler, DIReservoir &diReservoir);
 
-    // combine reservoir temporal
-    void TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, const RayStageBuffer &dstRs, const RayBounceBuffer &dstRb, Sampler &sampler);
+    // combine DI reservoir temporal
+    void TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<GBuffer> &prevGBuffers, DIReservoir &dstReservoir, const GBuffer &dstGbuffer, const RayBounceBuffer &dstRb, Sampler &sampler);
     
-    // combine reservoir spatial
-    void SpatialResample(Point2i pPixel, const Array2D<DIReservoir> &srcReservoir, const Array2D<RayStageBuffer> &srcRs, const Array2D<RayBounceBuffer> &srcRb, DIReservoir &dstReservoir, Sampler &sampler);
+    // combine DI reservoir spatial
+    void SpatialResample(Point2i pPixel, const Array2D<DIReservoir> &srcReservoir, const Array2D<GBuffer> &srcGBuffers, const Array2D<RayBounceBuffer> &srcRb, DIReservoir &dstReservoir, Sampler &sampler);
 
-    // combine reservoir spatiotemporal
-    void SpatialtemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler);
+    // combine DI reservoir spatiotemporal
+    void SpatialtemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<GBuffer> &prevGBuffers, DIReservoir &dstReservoir, GBuffer &dstGBuffer, RayBounceBuffer &dstRb, Sampler &sampler);
 
     // check light occluded and shading for WRS
-    void Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir& reservoir);
+    void Shading(RayBounceBuffer &rbBuffer, ReconnectData &rc, GBuffer &gBuffer, DIReservoir& diReservoir, PTReservoir &ptReservoir, ScratchBuffer &scratchBuffer, Sampler &sampler, RandomSeedCache &rand);
 
-    Array2D<DIReservoir> DIReservoirBuffers;
+    void SpawnBrdfRays(RayBounceBuffer &rbBuffer, ReconnectData &rc, GBuffer &gBuffer, ScratchBuffer &scratchBuffer, Sampler &sampler);
 
-    Array2D<RayStageBuffer> firstDIRayStageBuffers;
-    Array2D<RayStageBuffer> prevFirstDIRayStageBuffers;
+    bool ShiftReservoir(PTReservoir &dstReservoir, const PTReservoir &srcReservoir, const GBuffer &dstGBuffer, const GBuffer &srcGBuffer, const RayBounceBuffer &dstRbBuffer, SampledSpectrum &w_ld, Float &jacobian, ScratchBuffer &scratchBuffer, Sampler &sampler);
+    // combine PT reservoir temporal
+    void ReconnectTemporalResample(Point2i pPixel, Array2D<PTReservoir> &prevReservoirs, const Array2D<GBuffer> &prevGBuffers, PTReservoir &dstReservoir, const GBuffer &dstGBuffer, const RayBounceBuffer &dstRb, ScratchBuffer &scratchBuffer, Sampler &sampler);
+    // combine PT reservoir spatial
+    void ReconnectSpatialResample(Point2i pPixel, const Array2D<PTReservoir> &srcReservoirs, const Array2D<GBuffer> &srcGBuffers, const Array2D<RayBounceBuffer> &srcRb, PTReservoir &dstReservoir, ScratchBuffer &scratchBuffer, Sampler &sampler);
 
-    Array2D<DIReservoir> firstDIReservoirBuffers;
-    Array2D<DIReservoir> prevFirstDIReservoirBuffers;
+    
 
-    RestirParameter restirSetting;
+    Array2D<GBuffer> pingGBuffers;
+    Array2D<GBuffer> pongGBuffers;
 
+    Array2D<GBuffer> ptGBuffers;
+
+    Array2D<DIReservoir> pingDIReservoirBuffers;
+    Array2D<DIReservoir> pongDIReservoirBuffers;
+
+    Array2D<PTReservoir> pingPTReservoirBuffers;
+    Array2D<PTReservoir> pongPTReservoirBuffers;
+
+    Array2D<ReconnectData> rcBuffers;
+
+    RestirDIParameter restirDISetting;
+    RestirPTParameter restirPTSetting;
+
+    int currentSampleIndex = 0;
     Float currentTime = 0.f;
     int totalFrame = 0;
     int currentFrame = 0;

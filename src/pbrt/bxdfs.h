@@ -78,6 +78,8 @@ class DiffuseBxDF {
     PBRT_CPU_GPU
     void Regularize() {}
 
+    BxDF Clone(Allocator alloc);
+
     PBRT_CPU_GPU
     BxDFFlags Flags() const {
         return R ? BxDFFlags::DiffuseReflection : BxDFFlags::Unset;
@@ -85,81 +87,6 @@ class DiffuseBxDF {
 
   private:
     SampledSpectrum R;
-};
-
-// TODO:: MetalRoughnessBxDF
-
-
-// MetalRoughnessBxDF Definition
-class MetalRoughnessBxDF {
-  public:
-    // MetalRoughnessBxDF Public Methods
-    MetalRoughnessBxDF() = default;
-    PBRT_CPU_GPU
-    MetalRoughnessBxDF(SampledSpectrum diffuseAlbedo, SampledSpectrum specularF0, Float roughness)
-     : diffuseAlbedo(diffuseAlbedo), specularF0(specularF0), roughness(roughness) {}
-
-    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
-        return diffuseAlbedo;
-    }
-
-    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{
-        SampledSpectrum spec = specularF0;
-        spec[3] = roughness;
-        return spec;
-    }
-    // TODO:: this is from rtx-di, should use Falcor solution
-    PBRT_CPU_GPU
-    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const;
-
-    // TODO:: not impenment yet, should use Falcor solution
-    PBRT_CPU_GPU
-    pstd::optional<BSDFSample> Sample_f(
-        Vector3f wo, Float uc, Point2f u, TransportMode mode,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
-        if (!(sampleFlags & BxDFReflTransFlags::Reflection))
-            return {};
-        // Sample cosine-weighted hemisphere to compute _wi_ and _pdf_
-        Vector3f wi = SampleCosineHemisphere(u);
-        if (wo.z < 0)
-            wi.z *= -1;
-        Float pdf = CosineHemispherePDF(AbsCosTheta(wi));
-
-        return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseReflection);
-    }
-
-    // TODO:: not impenment yet, should use Falcor solution
-    PBRT_CPU_GPU
-    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
-              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
-        if (!(sampleFlags & BxDFReflTransFlags::Reflection) || !SameHemisphere(wo, wi))
-            return 0;
-        return CosineHemispherePDF(AbsCosTheta(wi));
-    }
-
-    PBRT_CPU_GPU
-    static constexpr const char *Name() { return "MetalRoughnessBxDF"; }
-
-    std::string ToString() const;
-
-    PBRT_CPU_GPU
-    void Regularize() {}
-
-    PBRT_CPU_GPU
-    BxDFFlags Flags() const {
-        BxDFFlags Flags = BxDFFlags::Reflection | BxDFFlags::MetalRoughness;
-        Flags = Flags | BxDFFlags::Diffuse;
-        Flags = Flags | BxDFFlags::Specular;
-        // if(diffuseAlbedo)
-        //     Flags = Flags | BxDFFlags::Diffuse;
-        // if(specularF0)
-        //     Flags = Flags | BxDFFlags::Specular;
-        return Flags;
-    }
-
-  private:
-    SampledSpectrum diffuseAlbedo, specularF0;
-    Float roughness;
 };
 
 // DiffuseTransmissionBxDF Definition
@@ -238,6 +165,8 @@ class DiffuseTransmissionBxDF {
     PBRT_CPU_GPU
     void Regularize() {}
 
+    BxDF Clone(Allocator alloc);
+
     PBRT_CPU_GPU
     BxDFFlags Flags() const {
         return ((R ? BxDFFlags::DiffuseReflection : BxDFFlags::Unset) |
@@ -288,6 +217,8 @@ class DielectricBxDF {
 
     PBRT_CPU_GPU
     void Regularize() { mfDistrib.Regularize(); }
+
+    BxDF Clone(Allocator alloc);
 
   private:
     // DielectricBxDF Private Members
@@ -360,6 +291,8 @@ class ThinDielectricBxDF {
     PBRT_CPU_GPU
     void Regularize() { /* TODO */
     }
+
+    BxDF Clone(Allocator alloc);
 
     PBRT_CPU_GPU
     BxDFFlags Flags() const {
@@ -472,6 +405,8 @@ class ConductorBxDF {
     PBRT_CPU_GPU
     void Regularize() { mfDistrib.Regularize(); }
 
+    BxDF Clone(Allocator alloc);
+
   private:
     // ConductorBxDF Private Members
     TrowbridgeReitzDistribution mfDistrib;
@@ -523,6 +458,8 @@ class TopOrBottomBxDF {
 
     PBRT_CPU_GPU
     BxDFFlags Flags() const { return top ? top->Flags() : bottom->Flags(); }
+
+    BxDF Clone(Allocator alloc);
 
   private:
     const TopBxDF *top = nullptr;
@@ -988,6 +925,8 @@ class LayeredBxDF {
         return Lerp(0.9f, 1 / (4 * Pi), pdfSum / nSamples);
     }
 
+    BxDF Clone(Allocator alloc);
+
   private:
     // LayeredBxDF Private Methods
     PBRT_CPU_GPU
@@ -1054,6 +993,8 @@ class HairBxDF {
 
     PBRT_CPU_GPU
     BxDFFlags Flags() const { return BxDFFlags::GlossyReflection; }
+
+    BxDF Clone(Allocator alloc);
 
     PBRT_CPU_GPU
     static RGBUnboundedSpectrum SigmaAFromConcentration(Float ce, Float cp);
@@ -1158,6 +1099,8 @@ class MeasuredBxDF {
     PBRT_CPU_GPU
     void Regularize() {}
 
+    BxDF Clone(Allocator alloc);
+
     PBRT_CPU_GPU
     static constexpr const char *Name() { return "MeasuredBxDF"; }
 
@@ -1220,6 +1163,8 @@ class NormalizedFresnelBxDF {
     PBRT_CPU_GPU
     void Regularize() {}
 
+    BxDF Clone(Allocator alloc);
+
     PBRT_CPU_GPU
     static constexpr const char *Name() { return "NormalizedFresnelBxDF"; }
 
@@ -1248,6 +1193,493 @@ class NormalizedFresnelBxDF {
   private:
     Float eta;
 };
+
+
+//////////////////////////////////////Falcor's Materials//////////////////////////////////////////
+// Falcor DiffuseReflectionFrostbiteBxDF Definition
+class DiffuseReflectionFrostbiteBxDF {
+  public:
+    // DiffuseReflectionFrostbiteBxDF Public Methods
+    DiffuseReflectionFrostbiteBxDF() = default;
+    PBRT_CPU_GPU
+    DiffuseReflectionFrostbiteBxDF(SampledSpectrum albedo, Float roughness) : albedo(albedo), roughness(roughness) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return albedo;
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const { return {}; }
+
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+        if (std::min(wi.z, wo.z) < kMinCosTheta) return {};
+
+        return evalWeight(wo, wi) * InvPi * wi.z;
+    }
+
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+            return {};
+        // Sample cosine-weighted hemisphere to compute _wi_ and _pdf_
+        Vector3f wi = SampleCosineHemisphere(u);
+        Float pdf = CosineHemispherePDF(AbsCosTheta(wi));
+
+        if (std::min(wi.z, wo.z) < kMinCosTheta)
+            return {};
+
+        // use "albedo" instead of "albedo * InvPi * wo.z", cause in FalcorBxDF
+        // we will deal with InvPi and wo.z component with previous f() result
+        return BSDFSample(evalWeight(wo, wi), wi, pdf, BxDFFlags::DiffuseReflection);
+    }
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection) || !SameHemisphere(wo, wi) || std::min(wi.z, wo.z) < kMinCosTheta)
+            return 0;
+        return InvPi * wi.z;
+    }
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "DiffuseReflectionFrostbiteBxDF"; }
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        return albedo ? BxDFFlags::DiffuseReflection : BxDFFlags::Unset;
+    }
+
+  private:
+    Float evalFresnelSchlick(Float f0, Float f90, Float cosTheta) const
+    {
+        return f0 + (f90 - f0) * Pow<5>(std::max(1.0f - cosTheta, 0.0f)); // Clamp to avoid NaN if cosTheta = 1+epsilon
+    }
+
+
+    SampledSpectrum evalWeight(Vector3f wi, Vector3f wo) const
+    {
+        Vector3f h = Normalize(wi + wo);
+        Float woDotH = Dot(wo, h);
+        Float energyBias = Lerp(roughness, 0.5f, 0.f);
+        Float energyFactor = Lerp(roughness, 1.f / 1.51f, 1.f);
+        Float fd90 = energyBias + 2.f * woDotH * woDotH * roughness;
+        Float fd0 = 1.f;
+        Float wiScatter = evalFresnelSchlick(fd0, fd90, wi.z);
+        Float woScatter = evalFresnelSchlick(fd0, fd90, wo.z);
+        return albedo * wiScatter * woScatter * energyFactor;
+    }
+
+    SampledSpectrum albedo;     ///< Diffuse albedo.
+    Float roughness;            ///< Roughness before remapping.
+};
+
+// Falcor DiffuseReflectionLambertBxDF Definition
+class DiffuseReflectionLambertBxDF {
+  public:
+    // DiffuseReflectionLambertBxDF Public Methods
+    DiffuseReflectionLambertBxDF() = default;
+    PBRT_CPU_GPU
+    DiffuseReflectionLambertBxDF(SampledSpectrum albedo, Float roughness) : albedo(albedo), roughness(roughness) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return albedo;
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const { return {}; }
+
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+        if (std::min(wi.z, wo.z) < kMinCosTheta) return {};
+
+        return albedo * InvPi * wi.z;
+    }
+
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+            return {};
+        // Sample cosine-weighted hemisphere to compute _wi_ and _pdf_
+        Vector3f wi = SampleCosineHemisphere(u);
+        Float pdf = InvPi * wi.z;
+
+        if (std::min(wi.z, wo.z) < kMinCosTheta)
+            return {};
+
+        // use "albedo" instead of "albedo * InvPi * wo.z", cause in FalcorBxDF
+        // we will deal with InvPi and wo.z component with previous f() result
+        return BSDFSample(albedo, wi, pdf, BxDFFlags::DiffuseReflection);
+    }
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection) || std::min(wi.z, wo.z) < kMinCosTheta)
+            return 0;
+        return InvPi * wi.z;
+    }
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "DiffuseReflectionLambertBxDF"; }
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        return albedo ? BxDFFlags::DiffuseReflection : BxDFFlags::Unset;
+    }
+
+  private:
+
+    SampledSpectrum albedo;     ///< Diffuse albedo.
+    Float roughness;            ///< Roughness before remapping.
+};
+
+// Falcor DiffuseTransmissionLambertBxDF Definition
+class DiffuseTransmissionLambertBxDF {
+  public:
+    // DiffuseTransmissionLambertBxDF Public Methods
+    DiffuseTransmissionLambertBxDF() = default;
+    PBRT_CPU_GPU
+    DiffuseTransmissionLambertBxDF(SampledSpectrum albedo) : albedo(albedo) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return albedo;
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const { return {}; }
+
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+        if (std::min(-wi.z, wo.z) < kMinCosTheta) return {};
+
+        return InvPi * albedo * -wi.z;
+    }
+
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+            return {};
+        // Sample cosine-weighted hemisphere to compute _wi_ and _pdf_
+        Vector3f wi = SampleCosineHemisphere(u);
+        wi.z = -wi.z;
+        Float pdf = CosineHemispherePDF(AbsCosTheta(wi));
+
+        if (std::min(-wi.z, wo.z) < kMinCosTheta)
+            return {};
+
+        // use "albedo" instead of "albedo * InvPi * wo.z", cause in FalcorBxDF
+        // we will deal with InvPi and wo.z component with previous f() result
+        return BSDFSample(albedo, wi, pdf, BxDFFlags::DiffuseReflection);
+    }
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection) || !SameHemisphere(wo, wi) || std::min(-wi.z, wo.z) >= kMinCosTheta)
+            return 0;
+        return CosineHemispherePDF(AbsCosTheta(wi));
+    }
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "DiffuseTransmissionLambertBxDF"; }
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        return albedo ? BxDFFlags::DiffuseTransmission : BxDFFlags::Unset;
+    }
+
+  private:
+    SampledSpectrum albedo;
+};
+
+// Falcor SpecularReflectionMicrofacetBxDF Definition
+class SpecularReflectionMicrofacetBxDF {
+  public:
+    // SpecularReflectionMicrofacetBxDF Public Methods
+    SpecularReflectionMicrofacetBxDF() = default;
+    PBRT_CPU_GPU
+    SpecularReflectionMicrofacetBxDF(SampledSpectrum albedo, Float alpha) : albedo(albedo), alpha(alpha) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return {};
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const { return albedo; }
+
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const;
+
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const;
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const;
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "SpecularReflectionMicrofacetBxDF"; }
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        return alpha ? albedo ? BxDFFlags::GlossyReflection : BxDFFlags::Unset : albedo ? BxDFFlags::SpecularReflection : BxDFFlags::Unset;
+    }
+
+  private:
+    SampledSpectrum albedo;     ///< Specular albedo.
+    Float alpha;                ///< GGX width parameter.
+};
+
+// Falcor SpecularReflectionTransmissionMicrofacetBxDF Definition
+class SpecularReflectionTransmissionMicrofacetBxDF {
+  public:
+    // SpecularReflectionTransmissionMicrofacetBxDF Public Methods
+    SpecularReflectionTransmissionMicrofacetBxDF() = default;
+    PBRT_CPU_GPU
+    SpecularReflectionTransmissionMicrofacetBxDF(SampledSpectrum transmissionAlbedo, Float alpha, Float eta) : transmissionAlbedo(transmissionAlbedo), alpha(alpha), eta(eta) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return {};
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const { return transmissionAlbedo; }
+
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const;
+
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const;
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const;
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "SpecularReflectionTransmissionMicrofacetBxDF"; }
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        return alpha ? transmissionAlbedo ? BxDFFlags::GlossyTransmission : BxDFFlags::Unset : transmissionAlbedo ? BxDFFlags::SpecularTransmission : BxDFFlags::Unset;
+    }
+
+  private:
+    SampledSpectrum transmissionAlbedo;     ///< Transmission albedo.
+    Float alpha;                            ///< GGX width parameter.
+    Float eta;                              ///< Relative index of refraction (etaI / etaT).
+};
+
+// FalcorBxDF (MetalRoughness + Specular + Transmission) Definition
+// Maybe this should implement in BSDF
+class FalcorBxDF {
+  public:
+    // FalcorBxDF Public Methods
+    FalcorBxDF() = default;
+    PBRT_CPU_GPU
+    FalcorBxDF(SampledSpectrum diffuse, SampledSpectrum specular,
+                Float roughness, Float metallic, Float eta,
+                SampledSpectrum transmission, Float d_diffuseTransmission, Float d_specularTransmission){
+        // Use square root if we can assume the shaded object is intersected twice.
+        // SampledSpectrum transmissionAlbedo = mtl.isThinSurface() ? transmission : transmission * transmission;
+        SampledSpectrum transmissionAlbedo = transmission;
+
+        // Setup lobes.
+        diffuseReflection = DiffuseReflectionLambertBxDF(diffuse, roughness);
+        diffuseTransmission = DiffuseTransmissionLambertBxDF(transmissionAlbedo);
+
+        rough = roughness;
+        // Compute GGX alpha.
+        Float alpha = roughness * roughness;
+        if (alpha < kMinGGXAlpha) alpha = 0.f;
+
+        specularReflection = SpecularReflectionMicrofacetBxDF(specular, alpha);
+        specularReflectionTransmission = SpecularReflectionTransmissionMicrofacetBxDF(transmissionAlbedo, eta == 1.f ? 0.f : alpha, eta);
+
+        diffTrans = d_diffuseTransmission;
+        specTrans = d_specularTransmission;
+
+        // Compute sampling weights.
+        // Maybe let integrator deal with this compute, cause this might need some wavelength info? 
+        metallicBRDF = metallic * (1.f - specTrans);
+        dielectricBSDF = (1.f - metallic) * (1.f - specTrans);
+        specularBSDF = specTrans;
+
+        
+    }
+
+    // TODO
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const { return diffuseReflection.GetDiffuse();}
+
+    // TODO
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const { 
+        SampledSpectrum spec = specularReflection.GetSpecular();
+        spec[3] = rough;
+        return spec; 
+    }
+    
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const;
+
+   
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const;
+
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const;
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "FalcorBxDF"; }
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    BxDF Clone(Allocator alloc);
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        BxDFFlags Flags = BxDFFlags::MetalRoughness | diffuseReflection.Flags() | diffuseTransmission.Flags() | specularReflection.Flags() | specularReflectionTransmission.Flags();
+        return Flags;
+    }
+
+  private:
+    Float rough;
+
+    DiffuseReflectionLambertBxDF diffuseReflection;
+    DiffuseTransmissionLambertBxDF diffuseTransmission;
+
+    SpecularReflectionMicrofacetBxDF specularReflection;
+    SpecularReflectionTransmissionMicrofacetBxDF specularReflectionTransmission;
+
+    Float diffTrans;                        ///< Mix between diffuse BRDF and diffuse BTDF.
+    Float specTrans;                        ///< Mix between dielectric BRDF and specular BSDF.
+
+    Float metallicBRDF;
+    Float dielectricBSDF;
+    Float specularBSDF;
+};
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////RTX-DI's Materials///////////////////////////////////////////
+/////Not implement sample_f and PDF function yet, cause RTX-DI's implement not organize well, /////
+/////some arrangement TODO                                                                    /////
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// RTX-DI's MetalRoughnessBxDF Definition
+class MetalRoughnessBxDF {
+  public:
+    // MetalRoughnessBxDF Public Methods
+    MetalRoughnessBxDF() = default;
+    PBRT_CPU_GPU
+    MetalRoughnessBxDF(SampledSpectrum diffuseAlbedo, SampledSpectrum specularF0, Float roughness)
+     : diffuseAlbedo(diffuseAlbedo), specularF0(specularF0), roughness(roughness) {}
+
+    PBRT_CPU_GPU SampledSpectrum GetDiffuse() const {
+        return diffuseAlbedo;
+    }
+
+    PBRT_CPU_GPU SampledSpectrum GetSpecular() const{
+        SampledSpectrum spec = specularF0;
+        spec[3] = roughness;
+        return spec;
+    }
+    // TODO:: this is from rtx-di, should use Falcor solution
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const;
+
+    // TODO:: not impenment yet, should use Falcor solution
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+            return {};
+        // Sample cosine-weighted hemisphere to compute _wi_ and _pdf_
+        Vector3f wi = SampleCosineHemisphere(u);
+        if (wo.z < 0)
+            wi.z *= -1;
+        Float pdf = CosineHemispherePDF(AbsCosTheta(wi));
+
+        return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseReflection);
+    }
+
+    // TODO:: not impenment yet, should use Falcor solution
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection) || !SameHemisphere(wo, wi))
+            return 0;
+        return CosineHemispherePDF(AbsCosTheta(wi));
+    }
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "MetalRoughnessBxDF"; }
+
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    BxDF Clone(Allocator alloc);
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        BxDFFlags Flags = BxDFFlags::Reflection | BxDFFlags::MetalRoughness;
+        Flags = Flags | BxDFFlags::Diffuse;
+        Flags = Flags | BxDFFlags::Specular;
+        // if(diffuseAlbedo)
+        //     Flags = Flags | BxDFFlags::Diffuse;
+        // if(specularF0)
+        //     Flags = Flags | BxDFFlags::Specular;
+        return Flags;
+    }
+
+  private:
+    SampledSpectrum diffuseAlbedo;  ///< Diffuse albedo.
+    SampledSpectrum specularF0;     ///< Specular albedo.
+    Float roughness;                ///< This is the original roughness, before remapping.
+    Float metallic;                 ///< Metallic parameter, blends between dielectric and conducting BSDFs.
+    Float eta;                      ///< Relative index of refraction (incident IoR / transmissive IoR).
+    SampledSpectrum transmission;   ///< Transmission color.
+    Float diffuseTransmission;      ///< Diffuse transmission, blends between diffuse reflection and transmission lobes.
+    Float specularTransmission;     ///< Specular transmission, blends between opaque dielectric BRDF and specular transmissive BSDF.
+};
+///////////////////////////////////////////////////////////////////////////////////////////////////
 
 inline SampledSpectrum BxDF::GetDiffuse() const {
     auto f = [&](auto ptr) -> SampledSpectrum { return ptr->GetDiffuse(); };

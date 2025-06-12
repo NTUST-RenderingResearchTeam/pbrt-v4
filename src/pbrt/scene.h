@@ -342,7 +342,7 @@ class BasicScene {
     // BasicScene Public Members
     SceneEntity integrator, accelerator;
     const RGBColorSpace *filmColorSpace;
-    bool disableWavelengthRendering = true;
+    bool disableWavelength = true;
     std::vector<ShapeSceneEntity> shapes;
     std::vector<AnimatedShapeSceneEntity> animatedShapes;
     std::vector<InstanceSceneEntity> instances;

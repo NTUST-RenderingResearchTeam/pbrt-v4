@@ -73,6 +73,8 @@ PBRT_CPU_GPU inline Float PowerHeuristic(int nf, Float fPdf, int ng, Float gPdf)
     Float f = nf * fPdf, g = ng * gPdf;
     if (IsInf(Sqr(f)))
         return 1;
+    if (!(Sqr(f) + Sqr(g)))
+        return 0;
     return Sqr(f) / (Sqr(f) + Sqr(g));
 }
 
@@ -411,6 +413,176 @@ PBRT_CPU_GPU inline Vector3f SampleCosineHemisphere(Point2f u) {
     Float z = SafeSqrt(1 - Sqr(d.x) - Sqr(d.y));
     return Vector3f(d.x, d.y, z);
 }
+
+/////////////////////////////////BRDF sample from Falcor/////////////////////////////////////////
+
+/** Samples the GGX (Trowbridge-Reitz) normal distribution function (D) using Walter et al. 2007's method.
+    Note that the sampled half vector may lie in the negative hemisphere. Such samples should be discarded.
+    See Eqn 35 & 36 in https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf
+    See Listing A.1 in https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf
+
+    \param[in] alpha GGX width parameter (should be clamped to small epsilon beforehand).
+    \param[in] u Uniform random number (2D).
+    \param[out] pdf Sampling probability.
+    \return Sampled half vector in local space.
+*/
+PBRT_CPU_GPU inline Vector3f sampleGGX_NDF(Float alpha, Point2f u)
+{
+    Float alphaSqr = alpha * alpha;
+    Float phi = u.y * (2.0f * Pi);
+    Float tanThetaSqr = alphaSqr * u.x / (1.0f - u.x);
+    Float cosTheta = 1.0f / sqrtf(1.0f + tanThetaSqr);
+    Float r = sqrtf(std::max(1.0f - cosTheta * cosTheta, 0.0f));
+
+    return Vector3f(cos(phi) * r, sin(phi) * r, cosTheta);
+}
+
+/** Samples the GGX (Trowbridge-Reitz) using the distribution of visible normals (VNDF).
+    The GGX VDNF yields significant variance reduction compared to sampling of the GGX NDF.
+    See http://jcgt.org/published/0007/04/01/paper.pdf
+
+    \param[in] alpha Isotropic GGX width parameter (should be clamped to small epsilon beforehand).
+    \param[in] wi Incident direction in local space, in the positive hemisphere.
+    \param[in] u Uniform random number (2D).
+    // \param[out] pdf Sampling probability. - removed for simplicity / removing code duplication; use 'evalPdfGGX_VNDF', compiler is smart enough to optimize things out
+    \return Sampled half vector in local space, in the positive hemisphere.
+*/
+PBRT_CPU_GPU inline Vector3f sampleGGX_VNDF(Float alpha, Vector3f wo, Point2f u)
+{
+    float alpha_x = alpha, alpha_y = alpha;
+
+    // Transform the view vector to the hemisphere configuration.
+    Vector3f Vh = Normalize(Vector3f(alpha_x * wo.x, alpha_y * wo.y, wo.z));
+
+    // Construct orthonormal basis (Vh,T1,T2).
+    Vector3f T1 = (Vh.z < 0.9999f) ? Normalize(Cross(Vector3f(0, 0, 1), Vh)) : Vector3f(1, 0, 0); // TODO: fp32 precision
+    Vector3f T2 = Cross(Vh, T1);
+
+    // Parameterization of the projected area of the hemisphere.
+    float r = sqrtf(u.x);
+    float phi = (2.f * Pi) * u.y;
+    float t1 = r * cos(phi);
+    float t2 = r * sin(phi);
+    float s = 0.5f * (1.f + Vh.z);
+    t2 = (1.f - s) * sqrtf(1.f - t1 * t1) + s * t2;
+
+    // Reproject onto hemisphere.
+    Vector3f Nh = t1 * T1 + t2 * T2 + sqrtf(std::max(0.f, 1.f - t1 * t1 - t2 * t2)) * Vh;
+
+    // Transform the normal back to the ellipsoid configuration. This is our half vector.
+    Vector3f h = Normalize(Vector3f(alpha_x * Nh.x, alpha_y * Nh.y, std::max(0.f, Nh.z)));
+
+    return h;
+}
+
+/** Samples the GGX using the >bounded< distribution of visible normals (VNDF).
+    See https://gpuopen.com/download/publications/Bounded_VNDF_Sampling_for_Smith-GGX_Reflections.pdf,
+    Adapted from listing 1.
+
+    \param[in] alpha Isotropic GGX width parameter (should be clamped to small epsilon beforehand).
+    \param[in] wi Incident direction in local space, in the positive hemisphere.
+    \param[in] u Uniform random number (2D).
+    \return Sampled half vector in local space, in the positive hemisphere.
+*/
+PBRT_CPU_GPU inline Vector3f sampleGGX_BVNDF(Float _alpha, Vector3f i, Point2f rand)
+{
+    Vector3f i_std = Normalize(Vector3f(i.x * _alpha, i.y * _alpha, i.z));
+    // Sample a spherical cap
+    Float phi = 2.0f * Pi * rand.x ;
+    Float a = pbrt::Clamp(_alpha, 0.0f, 1.0f); // Eq. 6
+    Float s = 1.0f + Length( Vector2f( i.x, i.y ) ); // Omit sgn for a <=1
+    Float a2 = a * a; Float s2 = s * s;
+    Float k = (1.0f - a2) * s2 / (s2 + a2 * i.z * i.z); // Eq. 5
+    Float b = i.z > 0.0f ? k * i_std.z : i_std.z;
+    Float z = (1.0f - rand.y) * (1.0f + b) - b;
+    Float sinTheta = sqrtf( pbrt::Clamp( 1.0f - z * z , 0.0f, 1.0f) );
+    Vector3f o_std = Vector3f( sinTheta * cos( phi ), sinTheta * sin( phi ), z );
+    // Compute the microfacet normal m
+    Vector3f m_std = i_std + o_std ;
+    // Transform the normal back to the ellipsoid configuration. This is our half vector. From this we can compute reflection vector with reflect(-ViewVector, h);
+    return Normalize( Vector3f(m_std.x * _alpha, m_std.y * _alpha , m_std.z ) );
+}
+
+PBRT_CPU_GPU inline Float evalNdfGGX(float alpha, float cosTheta)
+{
+    float a2 = alpha * alpha;
+    float d = ((cosTheta * a2 - cosTheta) * cosTheta + 1.0f);
+    if(!d)
+        return 0.f;
+    return a2 / (d * d * Pi);
+}
+
+/** Evaluates the Smith masking function (G1) for the GGX normal distribution.
+    See Eq 34 in https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf
+
+    The evaluated direction is assumed to be in the positive hemisphere relative the half vector.
+    This is the case when both incident and outgoing direction are in the same hemisphere, but care should be taken with transmission.
+
+    \param[in] alphaSqr Squared GGX width parameter.
+    \param[in] cosTheta Dot product between shading normal and evaluated direction, in the positive hemisphere.
+*/
+PBRT_CPU_GPU inline Float evalG1GGX(Float alphaSqr, Float cosTheta)
+{
+    if (cosTheta <= 0.0f) return 0.0f;
+    Float cosThetaSqr = cosTheta * cosTheta;
+    Float tanThetaSqr = std::max(1.0f - cosThetaSqr, 0.0f) / cosThetaSqr;
+    return 2.0f / (1.0f + sqrtf(1.0f + alphaSqr * tanThetaSqr));
+}
+
+/** Evaluates the PDF for sampling the GGX normal distribution function using Walter et al. 2007's method.
+    See https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf
+
+    \param[in] alpha GGX width parameter (should be clamped to small epsilon beforehand).
+    \param[in] cosTheta Dot product between shading normal and half vector, in positive hemisphere.
+    \return D(h) * cosTheta
+*/
+PBRT_CPU_GPU inline Float evalPdfGGX_NDF(Float alpha, Vector3f wi, Vector3f h)
+{
+    Float cosTheta = h.z;
+    return evalNdfGGX(alpha, cosTheta) * cosTheta / (std::max(0.f, Dot(wi, h)) * 4.0f);  // "1.0 / max(0.f, dot(wi, h)) * 4.0f" term used to be applied externally
+}
+
+/** Evaluates the PDF for sampling the GGX distribution of visible normals (VNDF).
+    See http://jcgt.org/published/0007/04/01/paper.pdf
+
+    \param[in] alpha GGX width parameter (should be clamped to small epsilon beforehand).
+    \param[in] wi Incident direction in local space, in the positive hemisphere.
+    \param[in] h Half vector in local space, in the positive hemisphere.
+    \return D_V(h) = G1(wi) * D(h) * max(0,dot(wi,h)) / wi.z
+*/
+PBRT_CPU_GPU inline Float evalPdfGGX_VNDF(Float alpha, Vector3f wo, Vector3f h)
+{
+    Float G1 = evalG1GGX(alpha * alpha, wo.z);
+    Float D = evalNdfGGX(alpha, h.z);
+    
+    // return G1 * D * std::max(0.f, Dot(wi, h)) / (wi.z * std::max(0.f, Dot(wi, h)) * 4.0f);   // <- corrected?
+    return G1 * D * std::max(0.f, Dot(wo, h)) / wo.z;
+}
+
+/** Evaluates the PDF for sampling the GGX distribution of >bounded< visible normals (BVNDF).
+    See https://gpuopen.com/download/publications/Bounded_VNDF_Sampling_for_Smith-GGX_Reflections.pdf, 
+    Adapted from listing 2.
+
+    \param[in] alpha GGX width parameter (should be clamped to small epsilon beforehand).
+    \param[in] wi Incident direction in local space, in the positive hemisphere.
+    \param[in] h Half vector in local space, in the positive hemisphere.
+    \return pdf
+*/
+PBRT_CPU_GPU inline Float evalPdfGGX_BVNDF( Float _alpha, Vector3f i, Vector3f m ) 
+{
+    Float ndf = evalNdfGGX(_alpha, m.z); //D(m , alpha);    // TODO: add support for anisotropic roughness
+    Vector2f ai = Vector2f(_alpha * i.x, _alpha * i.y);
+    Float len2 = Dot(ai, ai);
+    Float t = sqrtf( len2 + i.z * i.z );
+    Float a = pbrt::Clamp(_alpha, 0.0f, 1.0f); // Eq. 6
+    Float s = 1.0f + Length(Vector2f(i.x, i.y)); // Omit sgn for a <=1
+    Float a2 = a * a;
+    Float s2 = s * s;
+    Float k = (1.0f - a2) * s2 / (s2 + a2 * i.z * i.z); // Eq. 5
+    return ndf / (2.0f * (k * i.z + t)); // Eq. 8 * || dm/do ||
+}
+
+///////////////////////////////////////////////////////r/////////////////////////////////////////
 
 PBRT_CPU_GPU inline Float CosineHemispherePDF(Float cosTheta) {
     return cosTheta * InvPi;

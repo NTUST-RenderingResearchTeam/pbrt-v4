@@ -410,7 +410,7 @@ class DiffuseAreaLight : public LightBase {
   public:
     // DiffuseAreaLight Public Methods
     DiffuseAreaLight(const Transform &renderFromLight,
-                     const MediumInterface &mediumInterface, Spectrum Le, Float scale,
+                     const MediumInterface &mediumInterface, Spectrum Le, Float strength, Float scale,
                      const Shape shape, FloatTexture alpha, Image* image,
                      const RGBColorSpace *imageColorSpace, bool twoSided);
 
@@ -495,6 +495,7 @@ class DiffuseAreaLight : public LightBase {
     const DenselySampledSpectrum *Lemit;
     //*Add RTX-DI material
     Spectrum emissiveFactor;
+    Float emissiveStrength;
 
     Float scale;
     Image *image;
@@ -600,6 +601,8 @@ class ImageInfiniteLight : public LightBase {
         Point2f uv = EqualAreaSphereToSquare(wLight);
         return ImageLe(uv, lambda);
     }
+
+    // TODO:: Give direction  return uv for reservoir use
 
     PBRT_CPU_GPU
     pstd::optional<LightLiSample> SampleLi(LightSampleContext ctx, Point2f u,

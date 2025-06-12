@@ -63,64 +63,6 @@ std::string DiffuseBxDF::ToString() const {
     return StringPrintf("[ DiffuseBxDF R: %s ]", R);
 }
 
-SampledSpectrum Schlick_Fresnel(SampledSpectrum F0, float VdotH)
-{
-    return F0 + (1.0f - F0) * Pow<5>(std::max<Float>(1.0f - VdotH, 0.0f));
-}
-
-Float G_Smith_over_NdotV(Float roughness, Float NdotV, Float NdotL)
-{
-    Float alpha = Pow<2>(roughness);
-    Float g1 = NdotV * sqrtf(Pow<2>(alpha) + (1.0f - Pow<2>(alpha)) * Pow<2>(NdotL));
-    Float g2 = NdotL * sqrtf(Pow<2>(alpha) + (1.0f - Pow<2>(alpha)) * Pow<2>(NdotV));
-    return 2.0 * NdotL / (g1 + g2);
-}
-
-SampledSpectrum GGX_times_NdotL(Vector3f V, Vector3f L, Vector3f N, Float roughness, SampledSpectrum F0)
-{
-    Vector3f H = Normalize(L + V);
-
-    Float NoL = pbrt::Clamp(Dot(N, L), 0.0f, 1.0f);
-    Float VoH = pbrt::Clamp(Dot(V, H), 0.0f, 1.0f);
-    Float NoV = pbrt::Clamp(Dot(N, V), 0.0f, 1.0f);
-    Float NoH = pbrt::Clamp(Dot(N, H), 0.0f, 1.0f);
-
-    if (NoL > 0.0f)
-    {
-        Float G = G_Smith_over_NdotV(roughness, NoV, NoL);
-        Float alpha = Pow<2>(roughness);
-        Float D = Pow<2>(alpha) / (Pi * Pow<2>(Pow<2>(NoH) * Pow<2>(alpha) + (1 - Pow<2>(NoH))));
-
-        SampledSpectrum F = Schlick_Fresnel(F0, VoH);
-
-        return F * (D * G / 4.0f);
-    }
-    return {};
-}
-
-SampledSpectrum MetalRoughnessBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
-    Vector3f n = Vector3f(0,0,1);
-    if(!SameHemisphere(n, wo))
-        n *= -1.0f;
-
-    if (!SameHemisphere(n, wi))
-        return SampledSpectrum(0.f);
-    // Vector3f n = SameHemisphere(wo, Vector3f(0,0,1)) ? Vector3f(0,0,1) : Vector3f(0,0,-1);
-    
-    
-    Float diffuseLambert = std::max<Float>(0.0f, -Dot(n, -wi)) * InvPi;
-    SampledSpectrum specular;
-    if (roughness == 0)
-        specular = SampledSpectrum(0.0f);
-    else
-        specular = GGX_times_NdotL(wo, wi, n, std::max<Float>(roughness, 0.05f), specularF0);
-    return diffuseAlbedo * diffuseLambert + specular;
-}
-
-std::string MetalRoughnessBxDF::ToString() const {
-    return StringPrintf("[ MetalRoughnessBxDF diffuseAlbedo: %s specularF0: %s roughness: %s ]", diffuseAlbedo, specularF0, roughness);
-}
-
 std::string DiffuseTransmissionBxDF::ToString() const {
     return StringPrintf("[ DiffuseTransmissionBxDF R: %s T: %s ]", R, T);
 }
@@ -631,6 +573,502 @@ std::string HairBxDF::ToString() const {
         "[ HairBxDF h: %f eta: %f beta_m: %f beta_n: %f v[0]: %f s: %f sigma_a: %s ]", h,
         eta, beta_m, beta_n, v[0], s, sigma_a);
 }
+
+//////////////////////////////////////Falcor's Materials//////////////////////////////////////////
+
+Float evalLambdaGGX(Float alphaSqr, Float cosTheta)
+{
+    if (cosTheta <= 0) return 0.0f;
+    Float cosThetaSqr = cosTheta * cosTheta;
+    Float tanThetaSqr = std::max(1.0f - cosThetaSqr, 0.0f) / cosThetaSqr;
+    return 0.5f * (-1.0f + sqrtf(1.0f + alphaSqr * tanThetaSqr));
+}
+
+Float evalMaskingSmithGGXCorrelated(Float alpha, Float cosThetaI, Float cosThetaO)
+{
+    float alphaSqr = alpha * alpha;
+    float lambdaI = evalLambdaGGX(alphaSqr, cosThetaI);
+    float lambdaO = evalLambdaGGX(alphaSqr, cosThetaO);
+    return 1.0f / (1.0f + lambdaI + lambdaO);
+}
+
+SampledSpectrum evalFresnelSchlick(SampledSpectrum f0, SampledSpectrum f90, Float cosTheta)
+{
+    return f0 + (f90 - f0) * Pow<5>(std::max(1.0f - cosTheta, 0.0f)); // Clamp to avoid NaN if cosTheta = 1+epsilon
+}
+
+Float evalFresnelDielectric(Float eta, Float cosThetaI, Float& cosThetaT)
+{
+    if (cosThetaI < 0.0f)
+    {
+        eta = 1.0f / eta;
+        cosThetaI = -cosThetaI;
+    }
+
+    Float sinThetaTSq = eta * eta * (1.0f - cosThetaI * cosThetaI);
+    // Check for total internal reflection
+    if (sinThetaTSq > 1.0f)
+    {
+        cosThetaT = 0.0f;
+        return 1.0f;
+    }
+
+    cosThetaT = sqrtf(1.0f - sinThetaTSq); // No clamp needed
+
+    // Note that at eta=1 and cosThetaI=0, we get cosThetaT=0 and NaN below.
+    // It's important the framework clamps |cosThetaI| or eta to small epsilon.
+    Float Rs = (eta * cosThetaI - cosThetaT) / (eta * cosThetaI + cosThetaT);
+    Float Rp = (eta * cosThetaT - cosThetaI) / (eta * cosThetaT + cosThetaI);
+
+    return 0.5f * (Rs * Rs + Rp * Rp);
+}
+
+Float evalFresnelDielectric(Float eta, Float cosThetaI)
+{
+    Float cosThetaT;
+    return evalFresnelDielectric(eta, cosThetaI, cosThetaT);
+}
+
+std::string DiffuseReflectionFrostbiteBxDF::ToString() const {
+    return StringPrintf("[ DiffuseReflectionFrostbiteBxDF albedo: %s roughness: %s]", albedo, roughness);
+}
+
+std::string DiffuseReflectionLambertBxDF::ToString() const {
+    return StringPrintf("[ DiffuseReflectionLambertBxDF albedo: %s roughness: %s]", albedo, roughness);
+}
+
+std::string DiffuseTransmissionLambertBxDF::ToString() const {
+    return StringPrintf("[ DiffuseTransmissionLambertBxDF albedo: %s]", albedo);
+}
+
+
+SampledSpectrum SpecularReflectionMicrofacetBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+    if (std::min(wi.z, wo.z) < kMinCosTheta) return {};
+    if (alpha == 0.f) return {};
+
+    Vector3f h = Normalize(wi + wo);
+    Float woDotH = Dot(wo, h);
+
+    Float D = evalNdfGGX(alpha, h.z);
+    Float G = evalMaskingSmithGGXCorrelated(alpha, wo.z, wi.z);
+    SampledSpectrum F = evalFresnelSchlick(albedo, SampledSpectrum(1.f), woDotH);
+    return F * D * G * 0.25f / wo.z;
+}
+
+pstd::optional<BSDFSample> SpecularReflectionMicrofacetBxDF::Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags) const {
+    if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+        return {};
+    // Default initialization to avoid divergence at returns.
+    Vector3f wi = Vector3f();
+    SampledSpectrum weight = SampledSpectrum();
+    Float pdf = 0.f;
+
+    if (wo.z < kMinCosTheta) return {};
+
+    // alpha == 0 => mirror reflection
+    if (alpha == 0.f){
+        wi = Vector3f(-wo.x, -wo.y, wo.z);
+        pdf = 1.f;
+        weight = evalFresnelSchlick(albedo, SampledSpectrum(1.0f), wo.z);
+        return BSDFSample(weight, wi, pdf, BxDFFlags::SpecularReflection);
+    }
+
+    // Sample the GGX distribution to find a microfacet normal (half vector).
+    // there are 2 other sample function from Falcor choose 1 to use
+    Vector3f h = sampleGGX_VNDF(alpha, wo, u);
+
+    // Reflect the incident direction to find the outgoing direction.
+    Float woDotH = Dot(wo, h);
+    wi = 2.f * woDotH * h - wo;
+    if (wi.z < kMinCosTheta) return {};
+
+    Float G = evalMaskingSmithGGXCorrelated(alpha, wo.z, wi.z);
+    Float GOverG1wo = G * (1.f + evalLambdaGGX(alpha * alpha, wo.z));
+
+    SampledSpectrum F = evalFresnelSchlick(albedo, SampledSpectrum(1.f), woDotH);
+
+    weight = F * GOverG1wo;
+
+    pdf = evalPdfGGX_VNDF(alpha, wo, h);
+    pdf /= (4.f * woDotH);
+    if(!pdf) return {};
+
+    return BSDFSample(weight, wi, pdf, BxDFFlags::GlossyReflection);
+}
+
+Float SpecularReflectionMicrofacetBxDF::PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+                    BxDFReflTransFlags sampleFlags) const {
+    if (std::min(wi.z, wo.z) < kMinCosTheta) return 0.f;
+
+    if (alpha == 0.f) return 0.0f;
+
+    if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+        return 0.0f;
+    Vector3f h = Normalize(wi + wo);
+    Float woDotH = Dot(wo, h);
+    Float pdf = evalPdfGGX_VNDF(alpha, wo, h);
+    return pdf / (4.f * woDotH);
+}
+
+std::string SpecularReflectionMicrofacetBxDF::ToString() const {
+    return StringPrintf("[ SpecularReflectionMicrofacetBxDF albedo: %s alpha: %s ]", albedo, alpha);
+}
+
+SampledSpectrum SpecularReflectionTransmissionMicrofacetBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+    if (std::min(fabs(wi.z), wo.z) < kMinCosTheta) return {};
+    if (alpha == 0.f) return {};
+
+    const bool isReflection = wi.z > 0.f;
+
+    // Compute half-vector and make sure it's in the upper hemisphere.
+    Vector3f h = Normalize(wi + wo * (isReflection ? 1.f : eta));
+    h *= Float(copysignf(1.0f, h.z));
+    
+    Float wiDotH = Dot(wi, h);
+    Float woDotH = Dot(wo, h);
+
+    Float D = evalNdfGGX(alpha, h.z);
+    Float G = evalMaskingSmithGGXCorrelated(alpha, wo.z, fabs(wi.z));
+    Float F = evalFresnelDielectric(eta, woDotH);
+
+    if (isReflection)
+    {
+        return SampledSpectrum(F * D * G * 0.25f / wo.z);
+    }
+    else
+    {
+        float sqrtDenom = wiDotH + eta * woDotH;
+        float t = eta * eta * woDotH * wiDotH / (wo.z * sqrtDenom * sqrtDenom);
+        return transmissionAlbedo * (1.f - F) * D * G * fabs(t);
+    }
+}
+
+pstd::optional<BSDFSample> SpecularReflectionTransmissionMicrofacetBxDF::Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags) const {
+    // Default initialization to avoid divergence at returns.
+    Vector3f wi = Vector3f();
+    SampledSpectrum weight = SampledSpectrum();
+    Float pdf = 0.f;
+
+    // might not need this, cause Falcor seem use this to deal with FireFly only
+    Float lobeP = 1.f;
+
+    if (wo.z < kMinCosTheta) return {};
+
+    if (alpha == 0.f){
+        const bool hasReflection = sampleFlags & BxDFReflTransFlags::Reflection;
+        const bool hasTransmission = sampleFlags & BxDFReflTransFlags::Transmission;
+        if (!(hasReflection || hasTransmission))
+            return {};
+
+        Float cosThetaT;
+        Float F = evalFresnelDielectric(eta, wo.z, cosThetaT);
+
+        bool isReflection = hasReflection;
+        if (hasReflection && hasTransmission)
+        {
+            isReflection = uc < F;
+            lobeP = (isReflection)?(F):(1-F);
+        }
+        else if (hasTransmission && F == 1.f)
+        {
+            return {};
+        }
+
+        pdf = 1.f;
+        weight = isReflection ? SampledSpectrum(1.0f) : transmissionAlbedo;
+        if (!(hasReflection && hasTransmission)) weight *= SampledSpectrum(isReflection ? F : 1.f - F );
+        wi = isReflection ? Vector3f(-wi.x, -wi.y, wi.z) : Vector3f(-wi.x * eta, -wi.y * eta, -cosThetaT);
+
+        if (fabs(wi.z) < kMinCosTheta || (wi.z > 0.f != isReflection)) return {};
+
+        return BSDFSample(weight, wi, pdf, isReflection ? BxDFFlags::SpecularReflection : BxDFFlags::SpecularTransmission);
+    }
+
+    const bool hasReflection = sampleFlags & BxDFReflTransFlags::Reflection;
+    const bool hasTransmission = sampleFlags & BxDFReflTransFlags::Transmission;
+    if (!(hasReflection || hasTransmission)) return {};
+
+    // Sample the GGX distribution to find a microfacet normal (half vector).
+    // there are 2 other sample function from Falcor choose 1 to use
+    Vector3f h = sampleGGX_BVNDF(alpha, wo, u);
+
+    // Reflect/refract the incident direction to find the outgoing direction.
+    Float woDotH = Dot(wo, h);
+
+    Float cosThetaT;
+    Float F = evalFresnelDielectric(eta, woDotH, cosThetaT);
+
+    bool isReflection = hasReflection;
+    if (hasReflection && hasTransmission)
+    {
+        isReflection = uc < F;
+    }
+    else if (hasTransmission && F == 1.f)
+    {
+        return {};
+    }
+
+    wi = isReflection ?
+         (2.f * woDotH * h - wo) :
+         ((eta * woDotH - cosThetaT) * h - eta * wo);
+
+    if (fabs(wi.z) < kMinCosTheta || (wi.z > 0.f != isReflection)) return {};
+
+    float wiDotH = Dot(wi, h);
+
+    pdf = PDF(wo, wi, mode, sampleFlags); // We used to have pdf returned as part of the sampleGGX_XXX functions but this made it easier to add bugs when changing due to code duplication in refraction cases
+    weight = pdf > 0.f ? f(wo, wi, mode) / pdf : SampledSpectrum(0.0f);
+    return BSDFSample(weight, wi, pdf, isReflection ? BxDFFlags::GlossyReflection : BxDFFlags::GlossyTransmission);
+}
+
+Float SpecularReflectionTransmissionMicrofacetBxDF::PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+                    BxDFReflTransFlags sampleFlags) const {
+    if (std::min(fabs(wi.z), wo.z) < kMinCosTheta) return 0.0f;
+
+    if (alpha == 0.f) return 1.0f;
+
+    if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+            return 0.0f;
+
+    bool isReflection = wi.z > 0.f;
+    const bool hasReflection = sampleFlags & BxDFReflTransFlags::Reflection;
+    const bool hasTransmission = sampleFlags & BxDFReflTransFlags::Transmission;
+    if ((isReflection && !hasReflection) || (!isReflection && !hasTransmission)) return 1.f;
+
+    // Compute half-vector and make sure it's in the upper hemisphere.
+    Vector3f h = Normalize(wi + wo * (isReflection ? 1.f : eta));
+    h *= Float(copysign(1.0f, h.z));
+
+    Float wiDotH = Dot(wi, h);
+    Float woDotH = Dot(wo, h);
+
+    Float F = evalFresnelDielectric(eta, woDotH);
+
+    Float pdf = evalPdfGGX_BVNDF(alpha, wo, h);
+
+    if (isReflection)
+    {   // Jacobian of the reflection operator.
+        if (woDotH <= 0.f) return 0.f;
+        pdf *= wiDotH / woDotH; 
+    }
+    else
+    {   // Jacobian of the refraction operator.
+        if (woDotH > 0.f) return 0.f;
+        pdf *= wiDotH * 4.0f;
+        Float sqrtDenom = woDotH + eta * wiDotH;
+        Float denom = sqrtDenom * sqrtDenom;
+        pdf *= fabs(woDotH) / denom;
+    }
+
+    if (hasReflection && hasTransmission)
+    {
+        pdf *= isReflection ? F : 1.f - F;
+    }
+
+    return Clamp( pdf, 0.0f, FLT_MAX );
+}
+
+std::string SpecularReflectionTransmissionMicrofacetBxDF::ToString() const {
+    return StringPrintf("[ SpecularReflectionTransmissionMicrofacetBxDF transmissionAlbedo: %s alpha: %s eta: %s]", transmissionAlbedo, alpha, eta);
+}
+
+SampledSpectrum FalcorBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+    // Compute sampling weights.
+    Float diffuseWeight = diffuseReflection.GetDiffuse().ToLuminanceDisableWavelengthV2();
+    Float specularWeight = evalFresnelSchlick(specularReflection.GetSpecular(), SampledSpectrum(1.f), Dot(wo, Vector3f(.0f, .0f, 1.0f))).ToLuminanceDisableWavelengthV2();
+
+    Float pDiffuseReflection = (BxDFReflTransFlags::All & BxDFReflTransFlags::Reflection) ? diffuseWeight * dielectricBSDF * (1.f - diffTrans) : 0.f;
+    Float pDiffuseTransmission = (BxDFReflTransFlags::All & BxDFReflTransFlags::Transmission) ? diffuseWeight * dielectricBSDF * diffTrans : 0.f;
+    Float pSpecularReflection = (BxDFReflTransFlags::All & BxDFReflTransFlags::Reflection) ? specularWeight * (metallicBRDF + dielectricBSDF) : 0.f;
+    Float pSpecularReflectionTransmission = (BxDFReflTransFlags::All & BxDFReflTransFlags::Transmission) ? specularBSDF : 0.f;
+
+    Float normFactor = pDiffuseReflection + pDiffuseTransmission + pSpecularReflection + pSpecularReflectionTransmission;
+    if (normFactor > 0.f)
+    {
+        normFactor = 1.f / normFactor;
+        pDiffuseReflection *= normFactor;
+        pDiffuseTransmission *= normFactor;
+        pSpecularReflection *= normFactor;
+        pSpecularReflectionTransmission *= normFactor;
+    }
+
+    SampledSpectrum result = SampledSpectrum(0.f);
+    SampledSpectrum diffuseR = diffuseReflection.f(wo, wi, mode);
+    SampledSpectrum diffuseT = diffuseTransmission.f(wo, wi, mode);
+    SampledSpectrum specularR = specularReflection.f(wo, wi, mode);
+    SampledSpectrum specularT = specularReflectionTransmission.f(wo, wi, mode);
+    if (pDiffuseReflection > 0.f && diffuseR) result += (1.f - specTrans) * (1.f - diffTrans) * diffuseReflection.f(wo, wi, mode);
+    if (pDiffuseTransmission > 0.f && diffuseT) result += (1.f - specTrans) * diffTrans * diffuseTransmission.f(wo, wi, mode);
+    if (pSpecularReflection > 0.f && specularR) result += (1.f - specTrans) * specularReflection.f(wo, wi, mode);
+    if (pSpecularReflectionTransmission > 0.f && specularT) result += specTrans * (specularReflectionTransmission.f(wo, wi, mode));
+    return result;
+}
+
+pstd::optional<BSDFSample> FalcorBxDF::Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags) const {
+    // Default initialization to avoid divergence at returns.
+    pstd::optional<BSDFSample> bsdf = {};
+
+    // Compute sampling weights.
+    // Maybe let integrator deal with this compute, cause this might need some wavelength info? 
+    // we not using wavelength rendering currently so use fixed lambda
+    Float diffuseWeight = diffuseReflection.GetDiffuse().ToLuminanceDisableWavelengthV2();
+    Float specularWeight = evalFresnelSchlick(specularReflection.GetSpecular(), SampledSpectrum(1.f), Dot(wo, Vector3f(.0f, .0f, 1.0f))).ToLuminanceDisableWavelengthV2();
+
+    Float pDiffuseReflection = (sampleFlags & BxDFReflTransFlags::Reflection) ? diffuseWeight * dielectricBSDF * (1.f - diffTrans) : 0.f;
+    Float pDiffuseTransmission = (sampleFlags & BxDFReflTransFlags::Transmission) ? diffuseWeight * dielectricBSDF * diffTrans : 0.f;
+    Float pSpecularReflection = (sampleFlags & BxDFReflTransFlags::Reflection) ? specularWeight * (metallicBRDF + dielectricBSDF) : 0.f;
+    Float pSpecularReflectionTransmission = (sampleFlags & BxDFReflTransFlags::Transmission) ? specularBSDF : 0.f;
+
+    Float normFactor = pDiffuseReflection + pDiffuseTransmission + pSpecularReflection + pSpecularReflectionTransmission;
+    if (normFactor > 0.f)
+    {
+        normFactor = 1.f / normFactor;
+        pDiffuseReflection *= normFactor;
+        pDiffuseTransmission *= normFactor;
+        pSpecularReflection *= normFactor;
+        pSpecularReflectionTransmission *= normFactor;
+    }
+
+    // Note: The commented-out pdf contributions below are always zero, so no need to compute them.
+    if (uc < pDiffuseReflection)
+    { 
+        bsdf = diffuseReflection.Sample_f(wo, uc, u, mode, sampleFlags);
+        if(bsdf){
+            bsdf->f /= pDiffuseReflection;
+            bsdf->f *= (1.f - specTrans) * (1.f - diffTrans);
+            bsdf->pdf *= pDiffuseReflection;
+            if (pSpecularReflection > 0.f) bsdf->pdf += pSpecularReflection * specularReflection.PDF(wo, bsdf->wi, mode, sampleFlags);
+            if (pSpecularReflectionTransmission > 0.f) bsdf->pdf += pSpecularReflectionTransmission * specularReflectionTransmission.PDF(wo, bsdf->wi, mode, sampleFlags);
+        }
+    }
+    else if (uc < pDiffuseReflection + pDiffuseTransmission)
+    {
+        bsdf = diffuseTransmission.Sample_f(wo, uc, u, mode, sampleFlags);
+        if(bsdf){
+            bsdf->f /= pDiffuseTransmission;
+            bsdf->f *= (1.f - specTrans) * diffTrans;
+            bsdf->pdf *= pDiffuseTransmission;
+            if (pSpecularReflectionTransmission > 0.f) bsdf->pdf += pSpecularReflectionTransmission * specularReflectionTransmission.PDF(wo, bsdf->wi, mode, sampleFlags);
+        }
+    }
+    else if (uc < pDiffuseReflection + pDiffuseTransmission + pSpecularReflection)
+    {
+        bsdf = specularReflection.Sample_f(wo, uc, u, mode, sampleFlags);
+        if(bsdf){
+            bsdf->f /= pSpecularReflection;
+            bsdf->f *= (1.f - specTrans);
+            bsdf->pdf *= pSpecularReflection;
+            if (pDiffuseReflection > 0.f) bsdf->pdf += pDiffuseReflection * diffuseReflection.PDF(wo, bsdf->wi, mode, sampleFlags);
+            if (pSpecularReflectionTransmission > 0.f) bsdf->pdf += pSpecularReflectionTransmission * specularReflectionTransmission.PDF(wo, bsdf->wi, mode, sampleFlags);
+        }
+    }
+    else if (pSpecularReflectionTransmission > 0.f)
+    {
+        bsdf = specularReflectionTransmission.Sample_f(wo, uc, u, mode, sampleFlags);
+        if(bsdf){
+            bsdf->f /= pSpecularReflectionTransmission;
+            bsdf->f *= specTrans;
+            bsdf->pdf *= pSpecularReflectionTransmission;
+            if (pDiffuseReflection > 0.f) bsdf->pdf += pDiffuseReflection * diffuseReflection.PDF(wo, bsdf->wi, mode, sampleFlags);
+            if (pDiffuseTransmission > 0.f) bsdf->pdf += pDiffuseTransmission * diffuseTransmission.PDF(wo, bsdf->wi, mode, sampleFlags);
+            if (pSpecularReflection > 0.f) bsdf->pdf += pSpecularReflection * specularReflection.PDF(wo, bsdf->wi, mode, sampleFlags);
+        }
+    }
+
+    return bsdf;
+}
+
+Float FalcorBxDF::PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+                    BxDFReflTransFlags sampleFlags) const {
+    // Compute sampling weights.
+    // Maybe let integrator deal with this compute, cause this might need some wavelength info? 
+    // we not using wavelength rendering currently so use fixed lambda
+    Float diffuseWeight = diffuseReflection.GetDiffuse().ToLuminanceDisableWavelengthV2();
+    Float specularWeight = evalFresnelSchlick(specularReflection.GetSpecular(), SampledSpectrum(1.f), Dot(wo, Vector3f(.0f, .0f, 1.0f))).ToLuminanceDisableWavelengthV2();
+
+    Float pDiffuseReflection = (sampleFlags & BxDFReflTransFlags::Reflection) ? diffuseWeight * dielectricBSDF * (1.f - diffTrans) : 0.f;
+    Float pDiffuseTransmission = (sampleFlags & BxDFReflTransFlags::Transmission) ? diffuseWeight * dielectricBSDF * diffTrans : 0.f;
+    Float pSpecularReflection = (sampleFlags & BxDFReflTransFlags::Reflection) ? specularWeight * (metallicBRDF + dielectricBSDF) : 0.f;
+    Float pSpecularReflectionTransmission = (sampleFlags & BxDFReflTransFlags::Transmission) ? specularBSDF : 0.f;
+
+    Float pdf = 0.f;
+    if (pDiffuseReflection > 0.f) pdf += pDiffuseReflection * diffuseReflection.PDF(wo, wi, mode, sampleFlags);
+    if (pDiffuseTransmission > 0.f) pdf += pDiffuseTransmission * diffuseTransmission.PDF(wo, wi, mode, sampleFlags);
+    if (pSpecularReflection > 0.f) pdf += pSpecularReflection * specularReflection.PDF(wo, wi, mode, sampleFlags);
+    if (pSpecularReflectionTransmission > 0.f) pdf += pSpecularReflectionTransmission * specularReflectionTransmission.PDF(wo, wi, mode, sampleFlags);
+    return pdf;
+}
+
+std::string FalcorBxDF::ToString() const {
+    return StringPrintf("[ FalcorBxDF ]");
+}
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////RTX-DI's Materials///////////////////////////////////////////
+SampledSpectrum Schlick_Fresnel(SampledSpectrum F0, float VdotH)
+{
+    return F0 + (1.0f - F0) * Pow<5>(std::max<Float>(1.0f - VdotH, 0.0f));
+}
+
+Float G_Smith_over_NdotV(Float roughness, Float NdotV, Float NdotL)
+{
+    Float alpha = Pow<2>(roughness);
+    Float g1 = NdotV * sqrtf(Pow<2>(alpha) + (1.0f - Pow<2>(alpha)) * Pow<2>(NdotL));
+    Float g2 = NdotL * sqrtf(Pow<2>(alpha) + (1.0f - Pow<2>(alpha)) * Pow<2>(NdotV));
+    return 2.0 * NdotL / (g1 + g2);
+}
+
+SampledSpectrum GGX_times_NdotL(Vector3f V, Vector3f L, Vector3f N, Float roughness, SampledSpectrum F0)
+{
+    Vector3f H = Normalize(L + V);
+
+    Float NoL = pbrt::Clamp(Dot(N, L), 0.0f, 1.0f);
+    Float VoH = pbrt::Clamp(Dot(V, H), 0.0f, 1.0f);
+    Float NoV = pbrt::Clamp(Dot(N, V), 0.0f, 1.0f);
+    Float NoH = pbrt::Clamp(Dot(N, H), 0.0f, 1.0f);
+
+    if (NoL > 0.0f)
+    {
+        Float G = G_Smith_over_NdotV(roughness, NoV, NoL);
+        Float alpha = Pow<2>(roughness);
+        Float D = Pow<2>(alpha) / (Pi * Pow<2>(Pow<2>(NoH) * Pow<2>(alpha) + (1 - Pow<2>(NoH))));
+
+        SampledSpectrum F = Schlick_Fresnel(F0, VoH);
+
+        return F * (D * G / 4.0f);
+    }
+    return {};
+}
+
+SampledSpectrum MetalRoughnessBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+    Vector3f n = Vector3f(0,0,1);
+    if(!SameHemisphere(n, wo))
+        n *= -1.0f;
+
+    if (!SameHemisphere(n, wi))
+        return SampledSpectrum(0.f);
+    // Vector3f n = SameHemisphere(wo, Vector3f(0,0,1)) ? Vector3f(0,0,1) : Vector3f(0,0,-1);
+    
+    
+    Float diffuseLambert = std::max<Float>(0.0f, -Dot(n, -wi)) * InvPi;
+    SampledSpectrum specular;
+    if (roughness == 0)
+        specular = SampledSpectrum(0.0f);
+    else
+        specular = GGX_times_NdotL(wo, wi, n, std::max<Float>(roughness, 0.05f), specularF0);
+    return diffuseAlbedo * diffuseLambert + specular;
+}
+
+std::string MetalRoughnessBxDF::ToString() const {
+    return StringPrintf("[ MetalRoughnessBxDF diffuseAlbedo: %s specularF0: %s roughness: %s ]", diffuseAlbedo, specularF0, roughness);
+}
+///////////////////////////////////////////////////////////////////////////////////////////////////
 
 // *****************************************************************************
 // Tensor file I/O

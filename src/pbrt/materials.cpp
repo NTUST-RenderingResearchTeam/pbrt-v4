@@ -343,7 +343,7 @@ CoatedDiffuseMaterial *CoatedDiffuseMaterial::Create(
 }
 
 // *Add RTX-DI material
-// MetalRoughnessMaterial Method Definitions
+// DonutMaterial Method Definitions
 // TODO:: Use Falcor solution
 Float GetPerceivedBrightness(SampledSpectrum color)
 {
@@ -362,11 +362,12 @@ Float SolveMetalness(Float diffuse, Float specular, Float oneMinusSpecularStreng
     return Clamp((-b + std::sqrt(D)) / (2 * a), 0.0f, 1.0f);
 }
 
+#ifndef USE_FALCOR_MATERIAL
 template <typename TextureEvaluator>
-MetalRoughnessBxDF MetalRoughnessMaterial::GetBxDF(TextureEvaluator texEval,
+MetalRoughnessBxDF DonutMaterial::GetBxDF(TextureEvaluator texEval,
                                                  const MaterialEvalContext &ctx,
                                                  SampledWavelengths &lambda) const {
-    // return MetalRoughnessBxDF(SampledSpectrum(1.0f), SampledSpectrum(0.0f), 1.0f);
+    // return FalcorStandardBSDF(SampledSpectrum(1.0f), SampledSpectrum(0.0f), 1.0f);
 
     SampledSpectrum resultDiffuseAlbedo;
     SampledSpectrum resultSpecularF0;
@@ -421,24 +422,122 @@ MetalRoughnessBxDF MetalRoughnessMaterial::GetBxDF(TextureEvaluator texEval,
 }
 
 // Explicit template instantiation
-template MetalRoughnessBxDF MetalRoughnessMaterial::GetBxDF(
+template MetalRoughnessBxDF DonutMaterial::GetBxDF(
     BasicTextureEvaluator, const MaterialEvalContext &ctx,
     SampledWavelengths &lambda) const;
-template MetalRoughnessBxDF MetalRoughnessMaterial::GetBxDF(
+template MetalRoughnessBxDF DonutMaterial::GetBxDF(
     UniversalTextureEvaluator, const MaterialEvalContext &ctx,
     SampledWavelengths &lambda) const;
+#else
+// maybe pass N and V too like Falcor solution?
+template <typename TextureEvaluator>
+FalcorBxDF DonutMaterial::GetBxDF(TextureEvaluator texEval,
+                                                 const MaterialEvalContext &ctx,
+                                                 SampledWavelengths &lambda) const {
+    // return FalcorStandardBSDF(SampledSpectrum(1.0f), SampledSpectrum(0.0f), 1.0f);
 
-std::string MetalRoughnessMaterial::ToString() const {
+    SampledSpectrum resultBaseColor;
+    SampledSpectrum resultDiffuseAlbedo;
+    SampledSpectrum resultSpecularF0;
+    Float resultRoughness, resultMetallic, resultEta;
+
+    bool resultMetalRough = false;
+    // Initialize diffuse component of plastic material
+    // only use MetalRoughnees currently
+    if (useSpecularGlossModel)
+    {
+        SampledSpectrum resultDiffuseTex = Clamp(texEval(diffuseTex, ctx, lambda), 0.0f, 1.0f);
+        SampledSpectrum resultSpecularTex = Clamp(texEval(specularTex, ctx, lambda), 0.0f, 1.0f);
+        Float resultGloness = Clamp(texEval(glossTex, ctx), 0.0f, 1.0f);
+
+        SampledSpectrum diffuseColor = diffuse.Sample(lambda) * resultDiffuseTex;
+        SampledSpectrum specularColor = specular.Sample(lambda) * resultSpecularTex;
+        resultRoughness = 1.0 - resultGloness * (1.0 - roughness.Sample(lambda)[0]);
+
+        const Float epsilon = 1e-6;
+
+        Float oneMinusSpecularStrength = 1.0 - std::max<Float>(specularColor[0], std::max<Float>(specularColor[1], specularColor[2]));
+        Float resultMetallic = SolveMetalness(GetPerceivedBrightness(diffuseColor), GetPerceivedBrightness(specularColor), oneMinusSpecularStrength);
+
+        SampledSpectrum baseColorFromDiffuse = diffuseColor * (oneMinusSpecularStrength / (1 - c_DielectricSpecular) / std::max<Float>(1 - resultMetallic, epsilon));
+        SampledSpectrum baseColorFromSpecular = specularColor - SampledSpectrum(c_DielectricSpecular * (1 - resultMetallic) / std::max<Float>(resultMetallic, epsilon));
+        SampledSpectrum resultBaseColor = Clamp(Lerp(resultMetallic * resultMetallic, baseColorFromDiffuse, baseColorFromSpecular), 0.0f, 1.0f);
+        resultMetalRough = true;
+
+        // Compute the BRDF inputs for the specular-gloss model
+        // https://github.com/KhronosGroup/glTF/blob/master/extensions/2.0/Khronos/KHR_materials_pbrMetalRoughness/README.md#specular---glossiness
+        resultDiffuseAlbedo = diffuseColor * (1.0 - std::max<Float>(specularColor[0], std::max<Float>(specularColor[1], specularColor[2])));
+        resultSpecularF0 = specularColor;
+    }
+    else
+    {
+        SampledSpectrum resultDiffuseTex = Clamp(texEval(diffuseTex, ctx, lambda), 0.0f, 1.0f);
+        SampledSpectrum resultSpecularTex = Clamp(texEval(specularTex, ctx, lambda), 0.0f, 1.0f);
+
+        resultBaseColor = diffuse.Sample(lambda) * resultDiffuseTex;
+        resultRoughness = roughness.Sample(lambda)[0] * resultSpecularTex[1];
+        resultMetallic = metallic.Sample(lambda)[0] * resultSpecularTex[2];
+        resultMetalRough = true;
+
+        // Compute the BRDF inputs for the metal-rough model
+        // https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#metal-brdf-and-dielectric-brdf
+        // resultDiffuseAlbedo = Lerp(resultMetallic, resultBaseColor * (1.0 - c_DielectricSpecular), SampledSpectrum(.0f));
+        // resultSpecularF0 = Lerp(resultMetallic, SampledSpectrum(c_DielectricSpecular), resultBaseColor);
+
+        // use the Disney solusion like Falcor
+        Float f = (ior.Sample(lambda)[0] - 1.f) / (ior.Sample(lambda)[0] + 1.f);
+        Float F0 = f * f;
+
+        resultDiffuseAlbedo = Lerp(resultMetallic, resultBaseColor, SampledSpectrum(.0f));
+        resultSpecularF0 = Lerp(resultMetallic, SampledSpectrum(F0), resultBaseColor);
+    }
+
+    resultRoughness = std::min(1.0f, resultRoughness);
+
+    Float resultTransmission, resultDiffuseTransmission;
+    {
+        SampledSpectrum resultTransmissionTex = Clamp(texEval(transmissionTex, ctx, lambda), 0.0f, 1.0f);
+        resultTransmission = transmissionFactor.Sample(lambda)[0] * resultTransmissionTex[0];
+        resultDiffuseTransmission = diffuseTransmissionFactor.Sample(lambda)[0] * resultTransmissionTex[0];
+    }
+
+    resultEta = ior.Sample(lambda)[0];
+    
+    // TODO? occlusion, opacity, emissive, ior?
+
+    // convert from dount material to falcor material
+
+    // from https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_transmission/README.md#refraction
+    // "This microfacet lobe is exactly the same as the specular lobe except sampled along the line of sight through the surface."
+    Float resultSpecularTransmission = resultTransmission * (1 - resultMetallic);    // (1 - donutMaterial.metalness) is from https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_transmission/README.md#transparent-metals
+    Float diffuseTransmission = resultDiffuseTransmission * (1 - resultMetallic);    // (1 - donutMaterial.metalness) is from https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_transmission/README.md#transparent-metals
+    SampledSpectrum transmission = resultBaseColor;
+
+    return FalcorBxDF(resultDiffuseAlbedo, resultSpecularF0,
+                      resultRoughness, resultMetallic, resultEta,
+                      transmission, diffuseTransmission, resultSpecularTransmission);
+}
+
+// Explicit template instantiation
+template FalcorBxDF DonutMaterial::GetBxDF(
+    BasicTextureEvaluator, const MaterialEvalContext &ctx,
+    SampledWavelengths &lambda) const;
+template FalcorBxDF DonutMaterial::GetBxDF(
+    UniversalTextureEvaluator, const MaterialEvalContext &ctx,
+    SampledWavelengths &lambda) const;
+#endif
+std::string DonutMaterial::ToString() const {
     return StringPrintf(
-        "[ MetalRoughnessMaterial displacement: %s normalMap: %s"
+        "[ DonutMaterial displacement: %s normalMap: %s"
         "diffuseTex: %s specularTex: %s diffuseFactor: %s specularFactor: %s"
         " roughness: %s metallic: %s eta: %s useSpecularGlossModel: %s ]",
         displacement, normalMap ? normalMap->ToString() : std::string("(nullptr)"),
-        diffuseTex, specularTex, diffuse, specular, roughness, metallic, eta, useSpecularGlossModel);
+        diffuseTex, specularTex, diffuse, specular, roughness, metallic, ior, useSpecularGlossModel);
 }
 
+#ifndef USE_FALCOR_MATERIAL
 // GLTF material MetalRoughness or MatelRoughness define
-MetalRoughnessMaterial *MetalRoughnessMaterial::Create(
+DonutMaterial *DonutMaterial::Create(
     const TextureParameterDictionary &parameters, Image *normalMap, const FileLoc *loc,
     Allocator alloc) {
     SpectrumTexture diffuseTex = parameters.GetSpectrumTexture(
@@ -453,7 +552,7 @@ MetalRoughnessMaterial *MetalRoughnessMaterial::Create(
         specularTex = alloc.new_object<SpectrumConstantTexture>(
             alloc.new_object<ConstantSpectrum>(1.0f));
 
-    // specular texture's alpha channel for MetalRoughnessMaterial
+    // specular texture's alpha channel for DonutMaterial
     FloatTexture glossTex = parameters.GetFloatTextureOrNull("glosstex", alloc);
 
     Spectrum diffuse;
@@ -496,11 +595,151 @@ MetalRoughnessMaterial *MetalRoughnessMaterial::Create(
     FloatTexture displacement = parameters.GetFloatTextureOrNull("displacement", alloc);
     bool useSpecularGlossModel = parameters.GetOneBool("useSpecularGlossModel", false);
 
-    return alloc.new_object<MetalRoughnessMaterial>(
+    return alloc.new_object<DonutMaterial>(
         diffuseTex, specularTex, glossTex, diffuse, specular, roughness, metallic, eta, displacement,
         normalMap, useSpecularGlossModel, maxDepth, nSamples);
 }
+#else
+// GLTF material to Falcor define
+DonutMaterial *DonutMaterial::Create(
+    const TextureParameterDictionary &parameters, Image *normalMap, const FileLoc *loc,
+    Allocator alloc) {
+    SpectrumTexture diffuseTex = parameters.GetSpectrumTexture(
+        "diffusetex", nullptr, SpectrumType::Constant, alloc);
+    if (!diffuseTex)
+        diffuseTex = alloc.new_object<SpectrumConstantTexture>(
+            alloc.new_object<ConstantSpectrum>(1.0f));
 
+    SpectrumTexture specularTex = parameters.GetSpectrumTexture(
+        "speculartex", nullptr, SpectrumType::Constant, alloc);
+    if (!specularTex)
+        specularTex = alloc.new_object<SpectrumConstantTexture>(
+            alloc.new_object<ConstantSpectrum>(1.0f));
+
+    //TODO:: Assimp Scene convert
+    // this is same as texture in Light, maybe share same data?
+    // ignore currently
+    SpectrumTexture emissiveTex = parameters.GetSpectrumTexture(
+        "emissivetex", nullptr, SpectrumType::Constant, alloc);
+    if (!emissiveTex)
+        emissiveTex = alloc.new_object<SpectrumConstantTexture>(
+            alloc.new_object<ConstantSpectrum>(0.0f));
+
+    //TODO:: Assimp Scene convert
+    // ignore currently
+    SpectrumTexture occlusionTex = parameters.GetSpectrumTexture(
+        "occlusionTex", nullptr, SpectrumType::Constant, alloc);
+    if (!occlusionTex)
+        occlusionTex = alloc.new_object<SpectrumConstantTexture>(
+            alloc.new_object<ConstantSpectrum>(0.0f));
+
+    //TODO:: Assimp Scene convert
+    // ignore currently
+    SpectrumTexture transmissionTex = parameters.GetSpectrumTexture(
+        "transmissiontex", nullptr, SpectrumType::Constant, alloc);
+    if (!transmissionTex)
+        transmissionTex = alloc.new_object<SpectrumConstantTexture>(
+            alloc.new_object<ConstantSpectrum>(0.0f));
+
+    FloatTexture glossTex = parameters.GetFloatTextureOrNull("glosstex", alloc);
+
+    Spectrum diffuse;
+    diffuse = parameters.GetOneSpectrum("diffuse", nullptr, SpectrumType::Constant, alloc);
+    if (!diffuse)
+        diffuse = alloc.new_object<RGBConstantSpectrum>(*RGBColorSpace::sRGB, RGB(1.0f, 1.0f, 1.0f));
+
+    Spectrum specular;
+    specular = parameters.GetOneSpectrum("specular", nullptr, SpectrumType::Constant, alloc);
+    if (!specular)
+        specular = alloc.new_object<RGBConstantSpectrum>(*RGBColorSpace::sRGB, RGB(1.0f, 1.0f, 1.0f));
+
+    //TODO:: Assimp Scene convert
+    Spectrum emissive;
+    emissive = parameters.GetOneSpectrum("emissive", nullptr, SpectrumType::Constant, alloc);
+    if (!emissive)
+        emissive = alloc.new_object<RGBConstantSpectrum>(*RGBColorSpace::sRGB, RGB(0.0f, 0.0f, 0.0f));
+
+    
+
+    Spectrum metallic;
+    if (!parameters.GetFloatArray("metallic").empty())
+        metallic = alloc.new_object<ConstantSpectrum>(parameters.GetFloatArray("metallic")[0]);
+    else
+        metallic = parameters.GetOneSpectrum("metallic", nullptr, SpectrumType::Constant, alloc);
+    if (!metallic)
+        metallic = alloc.new_object<ConstantSpectrum>(1.0f);
+
+    Spectrum roughness;
+    if (!parameters.GetFloatArray("roughness").empty())
+        roughness = alloc.new_object<ConstantSpectrum>(parameters.GetFloatArray("roughness")[0]);
+    else
+        roughness = parameters.GetOneSpectrum("roughness", nullptr, SpectrumType::Constant, alloc);
+    if (!roughness)
+        roughness = alloc.new_object<ConstantSpectrum>(1.0f);
+
+    //TODO:: Assimp Scene convert
+    Spectrum opacity;
+    if (!parameters.GetFloatArray("opacity").empty())
+        opacity = alloc.new_object<ConstantSpectrum>(parameters.GetFloatArray("opacity")[0]);
+    else
+        opacity = parameters.GetOneSpectrum("opacity", nullptr, SpectrumType::Constant, alloc);
+    if (!opacity)
+        opacity = alloc.new_object<ConstantSpectrum>(1.0f);
+
+    //TODO:: Assimp Scene convert
+    Spectrum occlusionStrength;
+    if (!parameters.GetFloatArray("occlusionstrength").empty())
+        occlusionStrength = alloc.new_object<ConstantSpectrum>(parameters.GetFloatArray("occlusionstrength")[0]);
+    else
+        occlusionStrength = parameters.GetOneSpectrum("occlusionstrength", nullptr, SpectrumType::Constant, alloc);
+    if (!occlusionStrength)
+        occlusionStrength = alloc.new_object<ConstantSpectrum>(1.0f);
+
+    //TODO:: Assimp Scene convert
+    Spectrum transmissionFactor;
+    if (!parameters.GetFloatArray("transmissionfactor").empty())
+        transmissionFactor = alloc.new_object<ConstantSpectrum>(parameters.GetFloatArray("transmissionfactor")[0]);
+    else
+        transmissionFactor = parameters.GetOneSpectrum("transmissionfactor", nullptr, SpectrumType::Constant, alloc);
+    if (!transmissionFactor)
+        transmissionFactor = alloc.new_object<ConstantSpectrum>(0.0f);
+
+    //TODO:: Assimp Scene convert
+    Spectrum diffuseTransmissionFactor;
+    if (!parameters.GetFloatArray("diffusetransmissionfactor").empty())
+        diffuseTransmissionFactor = alloc.new_object<ConstantSpectrum>(parameters.GetFloatArray("diffusetransmissionfactor")[0]);
+    else
+        diffuseTransmissionFactor = parameters.GetOneSpectrum("diffusetransmissionfactor", nullptr, SpectrumType::Constant, alloc);
+    if (!diffuseTransmissionFactor)
+        diffuseTransmissionFactor = alloc.new_object<ConstantSpectrum>(0.0f);
+
+    //TODO:: Assimp Scene convert
+    Spectrum ior;
+    if (!parameters.GetFloatArray("ior").empty())
+        ior = alloc.new_object<ConstantSpectrum>(parameters.GetFloatArray("ior")[0]);
+    else
+        ior = parameters.GetOneSpectrum("ior", nullptr, SpectrumType::Unbounded, alloc);
+    if (!ior)
+        ior = alloc.new_object<ConstantSpectrum>(1.5f);
+
+    int maxDepth = parameters.GetOneInt("maxdepth", 10);
+    int nSamples = parameters.GetOneInt("nsamples", 1);
+
+    FloatTexture displacement = parameters.GetFloatTextureOrNull("displacement", alloc);
+    bool useSpecularGlossModel = parameters.GetOneBool("useSpecularGlossModel", false);
+
+    return alloc.new_object<DonutMaterial>(
+        diffuseTex, specularTex, emissiveTex,
+        occlusionTex, transmissionTex, glossTex,
+        diffuse, specular, emissive,
+        metallic, roughness,
+        opacity, occlusionStrength,
+        transmissionFactor, diffuseTransmissionFactor,
+        ior,
+        displacement, normalMap,
+        useSpecularGlossModel, maxDepth, nSamples);
+}
+#endif
 template <typename TextureEvaluator>
 CoatedConductorBxDF CoatedConductorMaterial::GetBxDF(TextureEvaluator texEval,
                                                      const MaterialEvalContext &ctx,
@@ -802,9 +1041,6 @@ Material Material::Create(const std::string &name,
         return nullptr;
     else if (name == "diffuse")
         material = DiffuseMaterial::Create(parameters, normalMap, loc, alloc);
-    // *Add metalroughness material from RTX-DI
-    else if (name == "metalroughness")
-        material = MetalRoughnessMaterial::Create(parameters, normalMap, loc, alloc);
     else if (name == "coateddiffuse")
         material = CoatedDiffuseMaterial::Create(parameters, normalMap, loc, alloc);
     else if (name == "coatedconductor")
@@ -841,7 +1077,17 @@ Material Material::Create(const std::string &name,
                           "the \"mix\" material.", materialNames[i]);
         }
         material = MixMaterial::Create(materials, parameters, loc, alloc);
-    } else
+    }
+#ifndef USE_FALCOR_MATERIAL
+    // *Add metalroughness material from RTX-DI
+    else if (name == "metalroughness")
+        material = DonutMaterial::Create(parameters, normalMap, loc, alloc);
+#else
+    // *Add Falcor material from RTX-PT
+    else if (name == "falcor")
+        material = DonutMaterial::Create(parameters, normalMap, loc, alloc);
+#endif
+    else
         ErrorExit(loc, "%s: material type unknown.", name);
 
     if (!material)

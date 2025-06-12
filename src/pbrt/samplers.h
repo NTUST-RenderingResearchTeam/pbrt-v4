@@ -53,6 +53,7 @@ class HaltonSampler {
     void StartPixelSample(Point2i p, int sampleIndex, int dim) {
         haltonIndex = 0;
         int sampleStride = baseScales[0] * baseScales[1];
+        pixel = p;
         // Compute Halton sample index for first sample in pixel _p_
         if (sampleStride > 1) {
             Point2i pm(Mod(p[0], MaxHaltonResolution), Mod(p[1], MaxHaltonResolution));
@@ -95,6 +96,14 @@ class HaltonSampler {
     PBRT_CPU_GPU
     int GetDim() {
         return dimension;
+    }
+    PBRT_CPU_GPU
+    Point2i GetPixel() {
+        return pixel;
+    }
+    PBRT_CPU_GPU
+    int GetSampleIndex() {
+        return sampleIndex;
     }
 
     Sampler Clone(Allocator alloc);
@@ -139,10 +148,11 @@ class HaltonSampler {
     RandomizeStrategy randomize;
     pstd::vector<DigitPermutation> *digitPermutations = nullptr;
     static constexpr int MaxHaltonResolution = 128;
-    Point2i baseScales, baseExponents;
+    Point2i baseScales, baseExponents, pixel;
     int multInverse[2];
     int64_t haltonIndex = 0;
     int dimension = 0;
+    int sampleIndex = 0;
 };
 
 // PaddedSobolSampler Definition
@@ -207,6 +217,14 @@ class PaddedSobolSampler {
     int GetDim() {
         return dimension;
     }
+    PBRT_CPU_GPU
+    Point2i GetPixel() {
+        return pixel;
+    }
+    PBRT_CPU_GPU
+    int GetSampleIndex() {
+        return sampleIndex;
+    }
 
 
     Sampler Clone(Allocator alloc);
@@ -263,7 +281,9 @@ class ZSobolSampler {
     PBRT_CPU_GPU
     void StartPixelSample(Point2i p, int index, int dim) {
         dimension = dim;
+        pixel = p;
         mortonIndex = (EncodeMorton2(p.x, p.y) << log2SamplesPerPixel) | index;
+        sampleIndex = index;
     }
 
     PBRT_CPU_GPU
@@ -310,6 +330,14 @@ class ZSobolSampler {
     PBRT_CPU_GPU
     int GetDim() {
         return dimension;
+    }
+    PBRT_CPU_GPU
+    Point2i GetPixel() {
+        return pixel;
+    }
+    PBRT_CPU_GPU
+    int GetSampleIndex() {
+        return sampleIndex;
     }
 
 
@@ -380,6 +408,8 @@ class ZSobolSampler {
     int seed, log2SamplesPerPixel, nBase4Digits;
     uint64_t mortonIndex;
     int dimension;
+    Point2i pixel;
+    int sampleIndex = 0;
 };
 
 // PMJ02BNSampler Definition
@@ -450,6 +480,14 @@ class PMJ02BNSampler {
     int GetDim() {
         return dimension;
     }
+    PBRT_CPU_GPU
+    Point2i GetPixel() {
+        return pixel;
+    }
+    PBRT_CPU_GPU
+    int GetSampleIndex() {
+        return sampleIndex;
+    }
 
 
     Sampler Clone(Allocator alloc);
@@ -481,6 +519,8 @@ class IndependentSampler {
 
     PBRT_CPU_GPU
     void StartPixelSample(Point2i p, int sampleIndex, int dimension) {
+        pixel = p;
+        sampleIndex = sampleIndex;
         rng.SetSequence(Hash(p, seed));
         rng.Advance(sampleIndex * 65536ull + dimension);
     }
@@ -495,6 +535,14 @@ class IndependentSampler {
     // *Add
     PBRT_CPU_GPU
     int GetDim() {return -1;}
+    PBRT_CPU_GPU
+    Point2i GetPixel() {
+        return pixel;
+    }
+    PBRT_CPU_GPU
+    int GetSampleIndex() {
+        return sampleIndex;
+    }
 
     PBRT_CPU_GPU
     int SetDim(int dim) {return -1;}
@@ -506,6 +554,8 @@ class IndependentSampler {
     // IndependentSampler Private Members
     int samplesPerPixel, seed;
     RNG rng;
+    Point2i pixel;
+    int sampleIndex = 0;
 };
 
 // SobolSampler Definition
@@ -536,6 +586,7 @@ class SobolSampler {
         pixel = p;
         dimension = std::max(2, dim);
         sobolIndex = SobolIntervalToIndex(Log2Int(scale), sampleIndex, pixel);
+        sampleIndex = sampleIndex;
     }
 
     PBRT_CPU_GPU
@@ -573,6 +624,14 @@ class SobolSampler {
     int GetDim() {
         return dimension;
     }
+    PBRT_CPU_GPU
+    Point2i GetPixel() {
+        return pixel;
+    }
+    PBRT_CPU_GPU
+    int GetSampleIndex() {
+        return sampleIndex;
+    }
 
     Sampler Clone(Allocator alloc);
     std::string ToString() const;
@@ -601,6 +660,7 @@ class SobolSampler {
     Point2i pixel;
     int dimension;
     int64_t sobolIndex;
+    int sampleIndex = 0;
 };
 
 // StratifiedSampler Definition
@@ -662,6 +722,14 @@ class StratifiedSampler {
     int GetDim() {
         return dimension;
     }
+    PBRT_CPU_GPU
+    Point2i GetPixel() {
+        return pixel;
+    }
+    PBRT_CPU_GPU
+    int GetSampleIndex() {
+        return sampleIndex;
+    }
 
 
     Sampler Clone(Allocator alloc);
@@ -705,6 +773,7 @@ class MLTSampler {
 
     PBRT_CPU_GPU
     void StartPixelSample(Point2i p, int sampleIndex, int dim) {
+        pixel = p;
         rng.SetSequence(Hash(p));
         rng.Advance(sampleIndex * 65536 + dim * 8192);
     }
@@ -721,6 +790,14 @@ class MLTSampler {
     // *Add
     PBRT_CPU_GPU
     int GetDim() {return -1;}
+    PBRT_CPU_GPU
+    Point2i GetPixel() {
+        return pixel;
+    }
+    PBRT_CPU_GPU
+    int GetSampleIndex() {
+        return sampleIndex;
+    }
 
 
     Sampler Clone(Allocator alloc);
@@ -781,6 +858,7 @@ class MLTSampler {
     bool largeStep = true;
     int64_t lastLargeStepIteration = 0;
     int streamIndex, sampleIndex;
+    Point2i pixel;
 };
 
 class DebugMLTSampler : public MLTSampler {
@@ -845,6 +923,14 @@ inline Point2f Sampler::GetPixel2D() {
 
 inline int Sampler::GetDim() {
     auto get = [&](auto ptr) { return ptr->GetDim(); };
+    return Dispatch(get);
+}
+inline Point2i Sampler::GetPixel() {
+    auto get = [&](auto ptr) { return ptr->GetPixel(); };
+    return Dispatch(get);
+}
+inline int Sampler::GetSampleIndex() {
+    auto get = [&](auto ptr) { return ptr->GetSampleIndex(); };
     return Dispatch(get);
 }
 // Sampler Inline Functions

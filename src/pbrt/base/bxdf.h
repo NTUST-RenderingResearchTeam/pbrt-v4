@@ -157,7 +157,6 @@ struct BSDFSample {
 };
 
 class DiffuseBxDF;
-class MetalRoughnessBxDF;
 class DiffuseTransmissionBxDF;
 class DielectricBxDF;
 class ThinDielectricBxDF;
@@ -167,12 +166,16 @@ class ConductorBxDF;
 class NormalizedFresnelBxDF;
 class CoatedDiffuseBxDF;
 class CoatedConductorBxDF;
+// RTX-DI Material
+class MetalRoughnessBxDF;
+// Falcor Material
+class FalcorBxDF;
 
 // BxDF Definition
 class BxDF
-    : public TaggedPointer<DiffuseTransmissionBxDF, DiffuseBxDF, MetalRoughnessBxDF, CoatedDiffuseBxDF,
+    : public TaggedPointer<DiffuseTransmissionBxDF, DiffuseBxDF, CoatedDiffuseBxDF,
                            CoatedConductorBxDF, DielectricBxDF, ThinDielectricBxDF,
-                           HairBxDF, MeasuredBxDF, ConductorBxDF, NormalizedFresnelBxDF> {
+                           HairBxDF, MeasuredBxDF, ConductorBxDF, NormalizedFresnelBxDF, MetalRoughnessBxDF, FalcorBxDF> {
   public:
     // BxDF Interface
     PBRT_CPU_GPU inline BxDFFlags Flags() const;

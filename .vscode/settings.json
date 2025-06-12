@@ -1,4 +1,5 @@
 {
+    "editor.showFoldingControls": "always"
     "files.associations": {
         "vector": "cpp",
         "algorithm": "cpp",

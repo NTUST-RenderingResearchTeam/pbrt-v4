@@ -843,7 +843,6 @@ SpectrumTexture TextureParameterDictionary::GetSpectrumTextureOrNull(
             auto iter = spectrumTextures.find(p->strings[0]);
             if (iter != spectrumTextures.end())
                 return iter->second;
-
             ErrorExit(&p->loc,
                       R"(Couldn't find spectrum texture named "%s" for parameter "%s")",
                       p->strings[0], p->name);

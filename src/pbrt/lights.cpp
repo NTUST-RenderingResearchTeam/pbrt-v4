@@ -682,7 +682,7 @@ GoniometricLight *GoniometricLight::Create(const Transform &renderFromLight,
 
 // DiffuseAreaLight Method Definitions
 DiffuseAreaLight::DiffuseAreaLight(const Transform &renderFromLight,
-                                   const MediumInterface &mediumInterface, Spectrum Le,
+                                   const MediumInterface &mediumInterface, Spectrum Le, Float strength,
                                    Float scale, const Shape shape, FloatTexture alpha,
                                    Image* im, const RGBColorSpace *imageColorSpace,
                                    bool twoSided)
@@ -716,8 +716,10 @@ DiffuseAreaLight::DiffuseAreaLight(const Transform &renderFromLight,
       imageColorSpace(imageColorSpace) {
     ++numAreaLights;
 
-    if(disableWavelength)
+    if(disableWavelength){
         emissiveFactor = Le;
+        emissiveStrength = strength;
+    }
     else
         Lemit = LookupSpectrum(Le);
 
@@ -903,6 +905,7 @@ DiffuseAreaLight *DiffuseAreaLight::Create(const Transform &renderFromLight,
         L = alloc.new_object<RGBConstantSpectrum>(*RGBColorSpace::sRGB, RGB(0.0f, 0.0f, 0.0f));
 
     Float scale = parameters.GetOneFloat("scale", 1);
+    Float strength = parameters.GetOneFloat("strength", 1);
     bool twoSided = parameters.GetOneBool("twosided", false);
 
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
@@ -965,7 +968,7 @@ DiffuseAreaLight *DiffuseAreaLight::Create(const Transform &renderFromLight,
         scale *= phi_v / k_e;
     }
 
-    return alloc.new_object<DiffuseAreaLight>(renderFromLight, medium, L, scale, shape,
+    return alloc.new_object<DiffuseAreaLight>(renderFromLight, medium, L, strength, scale, shape,
                                               alphaTex, im, imageColorSpace,
                                               twoSided);
 }

@@ -24,7 +24,7 @@ class CoatedConductorMaterial;
 class ConductorMaterial;
 class DielectricMaterial;
 class DiffuseMaterial;
-class MetalRoughnessMaterial;
+class DonutMaterial;
 class DiffuseTransmissionMaterial;
 class HairMaterial;
 class MeasuredMaterial;
@@ -36,7 +36,7 @@ class MixMaterial;
 class Material
     : public TaggedPointer<  // Material Types
           CoatedDiffuseMaterial, CoatedConductorMaterial, ConductorMaterial,
-          DielectricMaterial, DiffuseMaterial, MetalRoughnessMaterial, DiffuseTransmissionMaterial, HairMaterial,
+          DielectricMaterial, DiffuseMaterial, DonutMaterial, DiffuseTransmissionMaterial, HairMaterial,
           MeasuredMaterial, SubsurfaceMaterial, ThinDielectricMaterial, MixMaterial
 
           > {
@@ -67,6 +67,8 @@ class Material
     PBRT_CPU_GPU inline FloatTexture GetDisplacement() const;
 
     PBRT_CPU_GPU inline bool HasSubsurfaceScattering() const;
+
+    PBRT_CPU_GPU inline bool isTwoSided() const;
 };
 
 }  // namespace pbrt

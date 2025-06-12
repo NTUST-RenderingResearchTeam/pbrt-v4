@@ -15,6 +15,8 @@
 #include <pbrt/util/print.h>
 #include <pbrt/util/stats.h>
 
+#include <pbrt/util/progressreporter.h>
+
 #include <algorithm>
 #include <tuple>
 
@@ -1161,18 +1163,273 @@ KdTreeAggregate *KdTreeAggregate::Create(std::vector<Primitive> prims,
                                maxPrims, maxDepth);
 }
 
+// Voxel Declarations
+struct Voxel {
+    // Voxel Public Methods
+    Voxel() { }
+    std::vector<int> primitiveIndices;
+};
+
+// GridAccel Method Definitions
+UniformGridAggregate::UniformGridAggregate(std::vector<Primitive> p, Point3i vNums):
+    voxelNum(vNums), primitives(std::move(p)) {
+
+    bool isBoundInit = false;
+    for (Primitive &prim : primitives) {
+        if(!isBoundInit){
+            bounds = prim.Bounds();
+            isBoundInit = true;
+            continue;
+        }
+        Bounds3f b = prim.Bounds();
+        bounds = Union(bounds, b);
+    }
+    Vector3f delta = bounds.pMax - bounds.pMin;
+
+    // heuristic chose voxelNums
+    if(voxelNum.x == 0 && voxelNum.y == 0 && voxelNum.z == 0){
+
+        int maxAxis = bounds.MaxDimension();
+        Float invMaxWidth = 1.f / delta[maxAxis];
+        Float cubeRoot = 3.f * powf(Float
+        (primitives.size()), 1.f/3.f);
+        Float voxelsPerUnitDist = cubeRoot * invMaxWidth;
+
+        for (int axis = 0; axis < 3; ++axis) {
+            voxelNum[axis] = int(delta[axis] * voxelsPerUnitDist);
+            voxelNum[axis] = Clamp(voxelNum[axis], 1, 64);
+        }
+
+    }
+
+    for (int axis = 0; axis < 3; ++axis)
+        voxelWidth[axis] = delta[axis] / voxelNum[axis];
+
+
+    voxels = new Voxel[voxelNum[0] * voxelNum[1] * voxelNum[2]];
+
+    // mutex for each voxel when push prim_id
+    std::mutex* voxelMutex = new std::mutex[voxelNum[0] * voxelNum[1] * voxelNum[2]];
+    
+    // Add primitives to grid voxels
+
+    
+    bool enableParallel = true;
+    // Parallel build grid
+    if(enableParallel){
+        ParallelFor(0, primitives.size(), [&](int prim_id) {
+            // Find voxel bound of this prim
+            Bounds3f b = primitives[prim_id].Bounds();
+            Point3i vMin, vMax;
+            for (int i = 0; i < 3; ++i) {
+                vMin[i] = posToVxCoord(b.pMin, i);
+                vMax[i] = posToVxCoord(b.pMax, i);
+            }
+
+            // Put prim into each voxel
+            for (int z = vMin[2]; z <= vMax[2]; ++z)
+                for (int y = vMin[1]; y <= vMax[1]; ++y)
+                    for (int x = vMin[0]; x <= vMax[0]; ++x) {
+                        int offset = z * voxelNum[0] * voxelNum[1] + y * voxelNum[0] + x;
+                        voxelMutex[offset].lock();
+                        voxels[offset].primitiveIndices.push_back(prim_id);
+                        voxelMutex[offset].unlock();
+                    }
+        });
+    }
+    // nonParallel ver.
+    else{
+        for (int prim_id = 0; prim_id < primitives.size(); ++prim_id) {
+            // Find voxel bound of this prim
+            Bounds3f b = primitives[prim_id].Bounds();
+            Point3i vMin, vMax;
+            for (int axis = 0; axis < 3; ++axis) {
+                vMin[axis] = posToVxCoord(b.pMin, axis);
+                vMax[axis] = posToVxCoord(b.pMax, axis);
+            }
+            // Put prim into each voxel
+            for (int z = vMin[2]; z <= vMax[2]; ++z)
+                for (int y = vMin[1]; y <= vMax[1]; ++y)
+                    for (int x = vMin[0]; x <= vMax[0]; ++x) {
+                        int offset = z * voxelNum[0] * voxelNum[1] + y * voxelNum[0] + x;
+                        voxels[offset].primitiveIndices.push_back(prim_id);
+                    }
+        }
+    }
+    
+    
+
+
+    // printf("voxelNum : %d, %d, %d\n", voxelNum[0], voxelNum[1], voxelNum[2]);
+}
+
+UniformGridAggregate *UniformGridAggregate::Create(std::vector<Primitive> prims,
+                                   const ParameterDictionary &parameters) {
+    std::vector<int> vN = parameters.GetIntArray("voxelnum");
+    Point3i vNum(0, 0, 0);
+    if(vN.size() == 3)
+        vNum = Point3i(vN[0], vN[1], vN[2]);
+
+    return new UniformGridAggregate(std::move(prims), vNum);
+}
+
+pstd::optional<ShapeIntersection> UniformGridAggregate::Intersect(const Ray &ray,
+                                                          Float tMax) const {
+    if (!voxels)
+        return {};
+    pstd::optional<ShapeIntersection> si;
+    Vector3f invDir(1 / ray.d.x, 1 / ray.d.y, 1 / ray.d.z);
+    int dirIsNeg[3] = {int(invDir.x < 0), int(invDir.y < 0), int(invDir.z < 0)};
+
+    // miss hit grid bound
+    if (!bounds.IntersectP(ray.o, ray.d, tMax, invDir, dirIsNeg))
+        return si;
+
+    Float NextCrossingT[3], DeltaT[3];
+    // step direction of each axis
+    int Step[3];
+    // when to end traverse of each axis
+    int Out[3];
+    // cuurent voxel coord of each axis
+    int Pos[3];
+
+    // set up 3D DDA travel data
+    for (int axis = 0; axis < 3; ++axis) {
+        // Set cuurent voxel coord
+        Pos[axis] = posToVxCoord(ray.o, axis);
+        if (ray.d[axis] >= 0) {
+            // Handle ray with positive direction for voxel stepping
+            NextCrossingT[axis] = (vxCoordToPos(Pos[axis]+1, axis) - ray.o[axis]) / ray.d[axis];
+            DeltaT[axis] = voxelWidth[axis] / ray.d[axis];
+            Step[axis] = 1;
+            Out[axis] = voxelNum[axis];
+        }
+        else {
+            // Handle ray with negative direction for voxel stepping
+            NextCrossingT[axis] = (vxCoordToPos(Pos[axis], axis) - ray.o[axis]) / ray.d[axis];
+            DeltaT[axis] = -voxelWidth[axis] / ray.d[axis];
+            Step[axis] = -1;
+            Out[axis] = -1;
+        }
+    }
+    
+    
+    while (true) {
+        int vxVisitOffset = Pos[2] * voxelNum[0] * voxelNum[1] + Pos[1] * voxelNum[0] + Pos[0];
+        Voxel *voxel = &voxels[vxVisitOffset];
+        // Intersect ray with primitives in voxel
+        for (int i = 0; i < voxel->primitiveIndices.size(); ++i) {
+            // Check for intersection with primitive in voxel
+            pstd::optional<ShapeIntersection> primSi =
+                primitives[voxel->primitiveIndices[i]].Intersect(ray, tMax);
+            if (primSi) {
+                si = primSi;
+                tMax = si->tHit;
+            }
+        }
+
+        // step to next voxel
+        int bits = ((NextCrossingT[0] < NextCrossingT[1]) << 2) +
+                   ((NextCrossingT[0] < NextCrossingT[2]) << 1) +
+                   ((NextCrossingT[1] < NextCrossingT[2]));
+        const int cmpToAxis[8] = { 2, 1, 2, 1, 2, 2, 0, 0 };
+        int stepAxis = cmpToAxis[bits];
+        if (tMax < NextCrossingT[stepAxis])
+            break;
+        Pos[stepAxis] += Step[stepAxis];
+        if (Pos[stepAxis] == Out[stepAxis])
+            break;
+        NextCrossingT[stepAxis] += DeltaT[stepAxis];
+    }
+
+
+    return si;
+}
+
+bool UniformGridAggregate::IntersectP(const Ray &ray, Float tMax) const {
+    if (!voxels)
+        return false;
+    pstd::optional<ShapeIntersection> si;
+    Vector3f invDir(1 / ray.d.x, 1 / ray.d.y, 1 / ray.d.z);
+    int dirIsNeg[3] = {int(invDir.x < 0), int(invDir.y < 0), int(invDir.z < 0)};
+
+    // miss hit grid bound
+    if (!bounds.IntersectP(ray.o, ray.d, tMax, invDir, dirIsNeg))
+        return false;
+
+    Float NextCrossingT[3], DeltaT[3];
+    // step direction of each axis
+    int Step[3];
+    // when to end traverse of each axis
+    int Out[3];
+    // cuurent voxel coord of each axis
+    int Pos[3];
+
+    // set up 3D DDA travel data
+    for (int axis = 0; axis < 3; ++axis) {
+        // Set cuurent voxel coord
+        Pos[axis] = posToVxCoord(ray.o, axis);
+        if (ray.d[axis] >= 0) {
+            // Handle ray with positive direction for voxel stepping
+            NextCrossingT[axis] = (vxCoordToPos(Pos[axis]+1, axis) - ray.o[axis]) / ray.d[axis];
+            DeltaT[axis] = voxelWidth[axis] / ray.d[axis];
+            Step[axis] = 1;
+            Out[axis] = voxelNum[axis];
+        }
+        else {
+            // Handle ray with negative direction for voxel stepping
+            NextCrossingT[axis] = (vxCoordToPos(Pos[axis], axis) - ray.o[axis]) / ray.d[axis];
+            DeltaT[axis] = -voxelWidth[axis] / ray.d[axis];
+            Step[axis] = -1;
+            Out[axis] = -1;
+        }
+    }
+    
+    
+    while (true) {
+        int vxVisitOffset = Pos[2] * voxelNum[0] * voxelNum[1] + Pos[1] * voxelNum[0] + Pos[0];
+        Voxel *voxel = &voxels[vxVisitOffset];
+        // Intersect ray with primitives in voxel
+        for (int i = 0; i < voxel->primitiveIndices.size(); ++i) {
+            // Check for intersection with primitive in voxel
+            if (primitives[voxel->primitiveIndices[i]].IntersectP(ray, tMax)) 
+                return true;
+        }
+
+        // step to next voxel
+        int bits = ((NextCrossingT[0] < NextCrossingT[1]) << 2) +
+                   ((NextCrossingT[0] < NextCrossingT[2]) << 1) +
+                   ((NextCrossingT[1] < NextCrossingT[2]));
+        const int cmpToAxis[8] = { 2, 1, 2, 1, 2, 2, 0, 0 };
+        int stepAxis = cmpToAxis[bits];
+        if (tMax < NextCrossingT[stepAxis])
+            break;
+        Pos[stepAxis] += Step[stepAxis];
+        if (Pos[stepAxis] == Out[stepAxis])
+            break;
+        NextCrossingT[stepAxis] += DeltaT[stepAxis];
+    }
+
+    return false;
+}
+
 Primitive CreateAccelerator(const std::string &name, std::vector<Primitive> prims,
                             const ParameterDictionary &parameters) {
+    Timer timer;
     Primitive accel = nullptr;
     if (name == "bvh")
         accel = BVHAggregate::Create(std::move(prims), parameters);
     else if (name == "kdtree")
         accel = KdTreeAggregate::Create(std::move(prims), parameters);
+    else if (name == "uniformgrid")
+        accel = UniformGridAggregate::Create(std::move(prims), parameters);
     else
         ErrorExit("%s: accelerator type unknown.", name);
 
     if (!accel)
         ErrorExit("%s: unable to create accelerator.", name);
+
+    printf("Accelerator construct time: %lf\n", timer.ElapsedSeconds());
 
     parameters.ReportUnused();
     return accel;

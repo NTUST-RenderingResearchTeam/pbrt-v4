@@ -209,6 +209,8 @@ class SampledSpectrum {
     Float ToLuminance(const SampledWavelengths &lambda) const;
     // calculate Luminance with RGB grayscle(Without wavelength convert)
     Float ToLuminanceDisableWavelength() const;
+    // calculate Luminance of REC709 color space(Without wavelength convert) (Falcor solution)
+    Float ToLuminanceDisableWavelengthV2() const;
     Float ToLuminanceV2(const SampledWavelengths &lambda) const;
 
     SampledSpectrum() = default;

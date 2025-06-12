@@ -62,6 +62,10 @@ class Sampler
     PBRT_CPU_GPU inline int GetDim();
     PBRT_CPU_GPU inline int SetDim(int dim);
 
+    PBRT_CPU_GPU inline Point2i GetPixel();
+
+    PBRT_CPU_GPU inline int GetSampleIndex();
+
     Sampler Clone(Allocator alloc = {});
 
     std::string ToString() const;

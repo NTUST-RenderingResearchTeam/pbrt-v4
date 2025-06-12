@@ -244,6 +244,10 @@ Float SampledSpectrum::ToLuminanceDisableWavelength() const {
     return values[0] * 0.299f + values[1] * 0.587f + values[2] * 0.114f;
 }
 
+Float SampledSpectrum::ToLuminanceDisableWavelengthV2() const {
+    return values[0] * 0.2126f + values[1] * 0.7152f + values[2] * 0.0722f;
+}
+
 Float SampledSpectrum::ToLuminanceV2(const SampledWavelengths &lambda) const {
     XYZ xyz = ToXYZ(lambda);
     RGB rgb = RGBColorSpace::sRGB->ToRGB(xyz);

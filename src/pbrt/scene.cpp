@@ -1026,7 +1026,7 @@ void BasicScene::AddSpectrumTexture(std::string name, TextureSceneEntity texture
         TextureParameterDictionary texDict(&texture.parameters, nullptr);
         // Only create SpectrumType::Albedo for now; will get the other two
         // types in CreateTextures().
-        if(disableWavelengthRendering)
+        if(disableWavelength)
             return SpectrumTexture::Create(texture.name, renderFromTexture, texDict,
                                        SpectrumType::Constant, &texture.loc, alloc,
                                        Options->useGPU);
@@ -1227,7 +1227,7 @@ NamedTextures BasicScene::CreateTextures() {
         textures.floatTextures[tex.first] = tex.second->GetResult();
     floatTextureJobs.clear();
 
-    if(disableWavelengthRendering)
+    if(disableWavelength)
         for (auto &tex : spectrumTextureJobs)
             textures.constantSpectrumTextures[tex.first] = tex.second->GetResult();
     else

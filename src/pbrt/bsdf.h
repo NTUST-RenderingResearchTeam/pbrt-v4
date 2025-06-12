@@ -74,8 +74,8 @@ class BSDF {
         // Sample _bxdf_ and return _BSDFSample_
         pstd::optional<BSDFSample> bs = bxdf.Sample_f(wo, u, u2, mode, sampleFlags);
         if (bs)
-            DCHECK_GE(bs->pdf, 0);
-        if (!bs || !bs->f || bs->pdf == 0 || bs->wi.z == 0)
+           DCHECK_GE(bs->pdf, 0);
+        if (!bs || !bs->f || bs->wi.z == 0)
             return {};
         PBRT_DBG("For wo = (%f, %f, %f), ns %f %f %f sampled f = %f %f %f %f, pdf = %f, "
                  "ratio[0] = %f wi = (%f, %f, %f)\n",

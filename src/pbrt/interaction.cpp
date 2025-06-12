@@ -156,7 +156,6 @@ RayDifferential SurfaceInteraction::SpawnRay(const RayDifferential &rayi,
     return rd;
 }
 
-// TODO:: get simpify bsdf
 BSDF SurfaceInteraction::GetBSDF(const RayDifferential &ray, SampledWavelengths &lambda,
                                  Camera camera, ScratchBuffer &scratchBuffer,
                                  Sampler sampler) {
@@ -180,12 +179,19 @@ BSDF SurfaceInteraction::GetBSDF(const RayDifferential &ray, SampledWavelengths 
         // Get shading $\dpdu$ and $\dpdv$ using normal or bump map
         Vector3f dpdu, dpdv;
         if (normalMap)
-            NormalMap(*normalMap, *this, &dpdu, &dpdv);
+            // NormalMap(*normalMap, *this, &dpdu, &dpdv, false);
+            NormalMap(*normalMap, *this, &dpdu, &dpdv, material.isTwoSided() ? Dot(shading.n, wo) ? true : false : false);
         else
             BumpMap(UniversalTextureEvaluator(), displacement, *this, &dpdu, &dpdv);
 
         Normal3f ns(Normalize(Cross(dpdu, dpdv)));
         SetShadingGeometry(ns, dpdu, dpdv, shading.dndu, shading.dndv, false);
+    }
+
+    //*Add force normal face forward
+    if(material.isTwoSided()){
+        n = (Dot(n, wo) < 0.f) ? -n : n;
+        shading.n = (Dot(shading.n, wo) < 0.f) ? -shading.n : shading.n;
     }
 
     // Return BSDF for surface interaction

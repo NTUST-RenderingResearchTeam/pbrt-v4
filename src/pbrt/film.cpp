@@ -918,6 +918,9 @@ void RestirGBufferFilm::AddSample(Point2i pFilm, SampledSpectrum L,
         }
         p.uvSum += weight * visibleSurface->uv;
 
+        p.test0Sum += weight * visibleSurface->test0;
+        p.test1Sum += weight * visibleSurface->test1;
+
         // SampledSpectrum albedo =
         //     visibleSurface->albedo * colorSpace->illuminant.Sample(lambda);
         // RGB albedoRGB = visibleSurface->albedo.ToRGB(lambda, *colorSpace);
@@ -931,6 +934,7 @@ void RestirGBufferFilm::AddSample(Point2i pFilm, SampledSpectrum L,
         for (int c = 0; c < 3; ++c){
             p.rgbAlbedoSum[c] += weight * albedoRGB[c];
             p.rgbSpecularSum[c] += weight * specularRGB[c];
+            
         }
     }
 
@@ -1016,6 +1020,12 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
                  "Ns.X",
                  "Ns.Y",
                  "Ns.Z",
+                 "test0.X",
+                 "test0.Y",
+                 "test0.Z",
+                 "test1.X",
+                 "test1.Y",
+                 "test1.Z",
                  "u",
                  "v",
                  "Variance.R",
@@ -1030,6 +1040,8 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
     ImageChannelDesc dzDesc = image.GetChannelDesc({"dzdx", "dzdy"});
     ImageChannelDesc nDesc = image.GetChannelDesc({"N.X", "N.Y", "N.Z"});
     ImageChannelDesc nsDesc = image.GetChannelDesc({"Ns.X", "Ns.Y", "Ns.Z"});
+    ImageChannelDesc test0Desc = image.GetChannelDesc({"test0.X", "test0.Y", "test0.Z"});
+    ImageChannelDesc test1Desc = image.GetChannelDesc({"test1.X", "test1.Y", "test1.Z"});
     ImageChannelDesc uvDesc = image.GetChannelDesc({"u", "v"});
     ImageChannelDesc roughDesc = image.GetChannelDesc({"rough"});
     ImageChannelDesc albedoRgbDesc =
@@ -1054,6 +1066,8 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
         // Normalize pixel with weight sum
         Float weightSum = pixel.weightSum, gBufferWeightSum = pixel.gBufferWeightSum;
         Point3f pt = pixel.pSum;
+        Vector3f test0 = pixel.test0Sum;
+        Vector3f test1 = pixel.test1Sum;
         Point2f uv = pixel.uvSum;
         Float dzdx = pixel.dzdxSum, dzdy = pixel.dzdySum;
         if (weightSum != 0) {
@@ -1061,6 +1075,8 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
             albedoRgb /= weightSum;
             specularRgb /= weightSum;
             rough /= weightSum;
+            test0 /= weightSum;
+            test1 /= weightSum;
         }
         if (gBufferWeightSum != 0) {
             pt /= gBufferWeightSum;
@@ -1106,6 +1122,8 @@ Image RestirGBufferFilm::GetImage(ImageMetadata *metadata, Float splatScale) {
         image.SetChannels(pOffset, dzDesc, {std::abs(dzdx), std::abs(dzdy)});
         image.SetChannels(pOffset, nDesc, {n.x, n.y, n.z});
         image.SetChannels(pOffset, nsDesc, {ns.x, ns.y, ns.z});
+        image.SetChannels(pOffset, test0Desc, {test0.x, test0.y, test0.z});
+        image.SetChannels(pOffset, test1Desc, {test1.x, test1.y, test1.z});
         image.SetChannels(pOffset, uvDesc, {uv[0], uv[1]});
         image.SetChannels(
             pOffset, varianceDesc,

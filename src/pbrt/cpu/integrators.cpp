@@ -147,7 +147,7 @@ void ImageTileIntegrator::Render() {
         Film film = camera.GetFilm();
         DisplayDynamic(film.GetFilename(), Point2i(pixelBounds.Diagonal()),
                        {"R", "G", "B"},
-                       [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
+                       [&](Bounds2i b, pstd::span<pstd::span<Float>> displayValue) {
                            int index = 0;
                            for (Point2i p : b) {
                                RGB rgb = film.GetPixelRGB(pixelBounds.pMin + p,
@@ -416,6 +416,7 @@ void WavefrontIntegrator::SpawnFirstRays(Point2i pPixel, RayBounceBuffer &buffer
         if(allFinished)
             allFinished = false;
         buffer.ray = cameraRay->ray;
+        buffer.pPixel = pPixel;
         buffer.weight = cameraRay->weight;
         buffer.depth++;
     }
@@ -442,11 +443,11 @@ void WavefrontIntegrator::HitEmittedLight(RayBounceBuffer &rbBuffer, RayStageBuf
             SampledSpectrum Le = light.Le(rbBuffer.ray.value(), rbBuffer.lambda);
             if (rbBuffer.depth == 1 || (rbBuffer.specularBounce && !disableBSDFLightSample))
                 rbBuffer.L += rbBuffer.beta * Le;
-            else if(!disableBSDFLightSample) {
+            else if(!disableBSDFLightSample && !disableSampleFromLightSample) {
                 // Compute MIS weight for infinite light
-                Float p_l = lightSampler.PMF(rbBuffer.prevIntrCtx, light) *
-                            light.PDF_Li(rbBuffer.prevIntrCtx, rbBuffer.ray->d, true);
-                Float w_b = PowerHeuristic(1, rbBuffer.p_b, 1, p_l);
+                Float p_l = lightSampler.PMF(rbBuffer.prevIsect->intr, light) *
+                            light.PDF_Li(rbBuffer.prevIsect->intr, rbBuffer.ray->d, true);
+                Float w_b = PowerHeuristic(1, rbBuffer.ray_pdf, 1, p_l);
 
                 rbBuffer.L += rbBuffer.beta * w_b * Le;
             }
@@ -462,12 +463,12 @@ void WavefrontIntegrator::HitEmittedLight(RayBounceBuffer &rbBuffer, RayStageBuf
     if (Le) { /*hit light source*/
         if (rbBuffer.depth == 1 || (rbBuffer.specularBounce && !disableBSDFLightSample))
             rbBuffer.L += rbBuffer.beta * Le;
-        else if(!disableBSDFLightSample) {
+        else if(!disableBSDFLightSample && !disableSampleFromLightSample) {
             // Compute MIS weight for area light
             Light areaLight(rsBuffer.isect->intr.areaLight);
-            Float p_l = lightSampler.PMF(rbBuffer.prevIntrCtx, areaLight) *
-                        areaLight.PDF_Li(rbBuffer.prevIntrCtx, rbBuffer.ray->d, true);
-            Float w_l = PowerHeuristic(1, rbBuffer.p_b, 1, p_l);
+            Float p_l = lightSampler.PMF(rbBuffer.prevIsect->intr, areaLight) *
+                        areaLight.PDF_Li(rbBuffer.prevIsect->intr, rbBuffer.ray->d, true);
+            Float w_l = PowerHeuristic(1, rbBuffer.ray_pdf, 1, p_l);
 
             rbBuffer.L += rbBuffer.beta * w_l * Le;
         }
@@ -593,12 +594,14 @@ void WavefrontIntegrator::SpawnBrdfRays(RayBounceBuffer &rbBuffer, RayStageBuffe
     rbBuffer.beta *= bs->f / bs->pdf;
     if(!IsMetalRoughness(rsBuffer.bsdf->Flags()))
         rbBuffer.beta *= AbsDot(bs->wi, rsBuffer.isect->intr.shading.n);
-    rbBuffer.p_b = bs->pdfIsProportional ? rsBuffer.bsdf->PDF(wo, bs->wi) : bs->pdf;
+    rbBuffer.ray_pdf = bs->pdfIsProportional ? rsBuffer.bsdf->PDF(wo, bs->wi) : bs->pdf;
     rbBuffer.specularBounce = bs->IsSpecular();
     rbBuffer.anyNonSpecularBounces |= !bs->IsSpecular();
     if (bs->IsTransmission())
         rbBuffer.etaScale *= Sqr(bs->eta);
-    rbBuffer.prevIntrCtx = rsBuffer.isect->intr;
+
+    rbBuffer.prevIsect = rsBuffer.isect.value();
+    // rbBuffer.prevBsdf = rsBuffer.bsdf.value();
 
     rbBuffer.ray = rsBuffer.isect->intr.SpawnRay(rbBuffer.ray.value(), rsBuffer.bsdf.value(), bs->wi, bs->flags, bs->eta);
 
@@ -641,6 +644,8 @@ std::string WavefrontPathIntegrator::ToString() const {
 // *Add
 // WavefrontIntegrator Method Definitions
 void WavefrontPathIntegrator::Render() {
+
+    Printf("Scene Light amount: %d\n", lights.size());
 
     thread_local Point2i threadPixel;
     thread_local int threadSampleIndex;
@@ -703,7 +708,7 @@ void WavefrontPathIntegrator::Render() {
         Film film = camera.GetFilm();
         DisplayDynamic(film.GetFilename(), Point2i(pixelBounds.Diagonal()),
                        {"R", "G", "B"},
-                       [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
+                       [&](Bounds2i b, pstd::span<pstd::span<Float>> displayValue) {
                            int index = 0;
                            for (Point2i p : b) {
                                RGB rgb = film.GetPixelRGB(pixelBounds.pMin + p,
@@ -953,10 +958,10 @@ void WavefrontPathIntegrator::Render() {
 
 ///////////////////////////////////////ReSTIR Integrator///////////////////////////////////////////////
 
-ReSTIRIntegrator::ReSTIRIntegrator(int fps,int maxDepth, RestirParameter restirSetting, Camera camera, Sampler sampler, Primitive aggregate,
+ReSTIRIntegrator::ReSTIRIntegrator(int fps,int maxDepth, RestirDIParameter restirDISetting, RestirPTParameter restirPTSetting, Camera camera, Sampler sampler, Primitive aggregate,
                   std::vector<Light> lights, const std::string &lightSampleStrategy, bool regularize)
         : WavefrontIntegrator(fps, maxDepth, camera, sampler, aggregate, lights, lightSampleStrategy, regularize),
-         restirSetting(restirSetting) {}
+         restirDISetting(restirDISetting), restirPTSetting(restirPTSetting) {}
 
 std::unique_ptr<ReSTIRIntegrator> ReSTIRIntegrator::Create(
     const ParameterDictionary &parameters, Camera camera, Sampler sampler,
@@ -965,47 +970,85 @@ std::unique_ptr<ReSTIRIntegrator> ReSTIRIntegrator::Create(
     std::string lightStrategy = parameters.GetOneString("lightsampler", "bvh");
     bool regularize = parameters.GetOneBool("regularize", false);
     int fps = parameters.GetOneInt("fps", 24);
-    RestirParameter restirSetting;
+    RestirDIParameter restirDISetting;
 
-    std::string restirStrategy = parameters.GetOneString("restirmode", "spatiotemporal");
+    std::string restirStrategy = parameters.GetOneString("restirdimode", "none");
     if(restirStrategy == "temporal"){
-        restirSetting.isTemporal = true;
-        restirSetting.isSpatial = false;
+        restirDISetting.isTemporal = true;
+        restirDISetting.isSpatial = false;
     }
     else if(restirStrategy == "spatial"){
-        restirSetting.isTemporal = false;
-        restirSetting.isSpatial = true;
+        restirDISetting.isTemporal = false;
+        restirDISetting.isSpatial = true;
     }
     else if(restirStrategy == "spatiotemporal"){
-        restirSetting.isTemporal = true;
-        restirSetting.isSpatial = true;
-        // restirSetting.isSpatiotemporal = true;
+        restirDISetting.isTemporal = true;
+        restirDISetting.isSpatial = true;
+        // restirDISetting.isSpatiotemporal = true;
     }
     else if(restirStrategy == "none"){
-        restirSetting.isTemporal = false;
-        restirSetting.isSpatial = false;
-        // restirSetting.isSpatiotemporal = true;
+        restirDISetting.isTemporal = false;
+        restirDISetting.isSpatial = false;
+        // restirDISetting.isSpatiotemporal = true;
     }
     else{
         Error(R"(ReSTIR mode "%s" unknown. Using "Spatiotemporal".)",
               restirStrategy.c_str());
-        restirSetting.isTemporal = true;
-        restirSetting.isSpatial = true;
-        // restirSetting.isSpatiotemporal = true;
+        restirDISetting.isTemporal = true;
+        restirDISetting.isSpatial = true;
+        // restirDISetting.isSpatiotemporal = true;
     }
-    restirSetting.numLocalLightDISample = parameters.GetOneInt("numLocalLightDISample", 8);
+    restirDISetting.numLocalLightSample = parameters.GetOneInt("numLocalLightDISample", 1);
 
-    restirSetting.Nthreshold = parameters.GetOneFloat("Nthreshold", 0.2f);
-    restirSetting.Dthreshold = parameters.GetOneFloat("Dthreshold", 0.1f);
+    restirDISetting.Nthreshold = parameters.GetOneFloat("DINthreshold", 0.2f);
+    restirDISetting.Dthreshold = parameters.GetOneFloat("DIDthreshold", 0.1f);
 
-    restirSetting.spatialRadius = parameters.GetOneFloat("spatialRadius", 16.0f);
-    restirSetting.numSpatialSamples = parameters.GetOneInt("numSpatialSamples", 8);
-    restirSetting.maxSpatialDistance = parameters.GetOneFloat("maxSpatialDistance", 32.0f);
+    restirDISetting.spatialRadius = parameters.GetOneFloat("DIspatialRadius", 16.0f);
+    restirDISetting.numSpatialSamples = parameters.GetOneInt("DInumSpatialSamples", 8);
+    restirDISetting.maxSpatialDistance = parameters.GetOneFloat("DImaxSpatialDistance", 32.0f);
 
-    restirSetting.maxAge = parameters.GetOneInt("maxAge", 16);
-    restirSetting.historyLimit = parameters.GetOneInt("historyLimit", 20);
+    restirDISetting.maxAge = parameters.GetOneInt("DImaxAge", 20);
+    restirDISetting.historyLimit = parameters.GetOneInt("DIhistoryLimit", 20);
 
-    return std::make_unique<ReSTIRIntegrator>(fps, maxDepth, restirSetting, camera, sampler, aggregate, lights,
+    RestirPTParameter restirPTSetting;
+
+    std::string restirStrategy = parameters.GetOneString("restirptmode", "none");
+    if(restirStrategy == "temporal"){
+        restirPTSetting.isTemporal = true;
+        restirPTSetting.isSpatial = false;
+    }
+    else if(restirStrategy == "spatial"){
+        restirPTSetting.isTemporal = false;
+        restirPTSetting.isSpatial = true;
+    }
+    else if(restirStrategy == "spatiotemporal"){
+        restirPTSetting.isTemporal = true;
+        restirPTSetting.isSpatial = true;
+    }
+    else if(restirStrategy == "none"){
+        restirPTSetting.isTemporal = false;
+        restirPTSetting.isSpatial = false;
+    }
+    else{
+        Error(R"(ReSTIR mode "%s" unknown. Using "Spatiotemporal".)",
+              restirStrategy.c_str());
+        restirDISetting.isTemporal = true;
+        restirDISetting.isSpatial = true;
+        // restirDISetting.isSpatiotemporal = true;
+    }
+    restirPTSetting.numLocalLightSample = parameters.GetOneInt("numLocalLightPTSample", 1);
+
+    restirPTSetting.Nthreshold = parameters.GetOneFloat("PTNthreshold", 0.2f);
+    restirPTSetting.Dthreshold = parameters.GetOneFloat("PTDthreshold", 0.1f);
+
+    restirPTSetting.spatialRadius = parameters.GetOneFloat("PTspatialRadius", 16.0f);
+    restirPTSetting.numSpatialSamples = parameters.GetOneInt("PTnumSpatialSamples", 8);
+    // restirPTSetting.maxSpatialDistance = parameters.GetOneFloat("PTmaxSpatialDistance", 32.0f);
+
+    restirPTSetting.maxAge = parameters.GetOneInt("PTmaxAge", 20);
+    restirPTSetting.historyLimit = parameters.GetOneInt("PThistoryLimit", 20);
+
+    return std::make_unique<ReSTIRIntegrator>(fps, maxDepth, restirDISetting, restirPTSetting, camera, sampler, aggregate, lights,
                                             lightStrategy, regularize);
 }
 
@@ -1014,8 +1057,8 @@ std::string ReSTIRIntegrator::ToString() const {
                         maxDepth);
 }
 
-bool ReSTIRIntegrator::streamReservoir(DIReservoir &reservoir, float targetPdf, float sourcePdf, Sampler &sampler){
-    float risWeight = targetPdf / sourcePdf;
+bool ReSTIRIntegrator::streamReservoir(DIReservoir &reservoir, Float targetPdf, Float sourcePdf, Sampler &sampler){
+    Float risWeight = targetPdf / sourcePdf;
 
     reservoir.M++;
     reservoir.weightSum += risWeight;
@@ -1028,10 +1071,25 @@ bool ReSTIRIntegrator::streamReservoir(DIReservoir &reservoir, float targetPdf, 
     return false;
 }
 
+bool ReSTIRIntegrator::streamReservoir(PTReservoir &reservoir, Float targetPdf, Float sourcePdf, Sampler &sampler){
+    Float risWeight = targetPdf / sourcePdf;
+
+    reservoir.M++;
+    reservoir.W += risWeight;
+
+    Float rng = sampler.Get1D();
+
+    if(rng * reservoir.W < risWeight)
+        return true;
+        
+    return false;
+}
+
 //TODO:: use mis to combine different ris
-bool ReSTIRIntegrator::combineReservoir(DIReservoir &dst, const DIReservoir &src, float targetPdf, Sampler &sampler){
-    float risWeight = targetPdf * src.W * src.M;
-    //float risWeight = src.weightSum;
+bool ReSTIRIntegrator::combineReservoir(DIReservoir &dst, const DIReservoir &src, Float targetPdf, Sampler &sampler, bool resetVis){
+    // this is weightSum, but we capping M so we need rereconstruct weightSum from W
+    Float risWeight = targetPdf * src.W * src.M;
+    //Float risWeight = src.weightSum;
 
     int M = dst.M + src.M;
 
@@ -1040,7 +1098,7 @@ bool ReSTIRIntegrator::combineReservoir(DIReservoir &dst, const DIReservoir &src
         dst.targetPdf = targetPdf;
         dst.visibility = src.visibility;
         dst.isVisCheck = src.isVisCheck;
-        if(!restirSetting.reUseVisibility){
+        if(resetVis){
             dst.isVisCheck = false;
             dst.visibility = true;
         }
@@ -1051,23 +1109,60 @@ bool ReSTIRIntegrator::combineReservoir(DIReservoir &dst, const DIReservoir &src
     return false;
 }
 
-void ReSTIRIntegrator::finalResampling(DIReservoir &reservoir, const RayStageBuffer &rsBuffer, bool checkVisibility, bool discardIfInvisible){
+bool ReSTIRIntegrator::combineReservoir(PTReservoir &dst, const PTReservoir &src, Float targetPdf, Float misWeight, Float jacobian, Sampler &sampler, bool resetVis){
+    // this is weightSum, but we capping M so we need rereconstruct weightSum from W
+    Float risWeight = targetPdf * src.W * src.M * jacobian * misWeight;
+    //Float risWeight = src.weightSum;
+
+    int M = dst.M + src.M;
+
+    if(!risWeight){
+        dst.M = M;
+        return false;
+    }
+
+    if(streamReservoir(dst, risWeight, 1.0f, sampler)){
+        dst.M = M;
+        return true;
+    }
+
+    dst.M = M;
+    return false;
+}
+
+void ReSTIRIntegrator::finalResampling(DIReservoir &reservoir, const GBuffer &gBuffer, bool checkVis, bool forceVisCheck, bool discardIfInvisible){
     if(!reservoir.ls || !reservoir.ls->L || reservoir.ls->pdf == 0){
         reservoir.W = 0;
         return;
     }
 
-    if(reservoir.weightSum == 0 || reservoir.M == 0){
+    if(reservoir.weightSum == 0 || reservoir.M == 0 || reservoir.targetPdf == 0){
         reservoir.W = 0;
         return;
     }
     reservoir.W = (reservoir.weightSum / reservoir.M) / reservoir.targetPdf;
     // reservoir.weightSum = reservoir.targetPdf * reservoir.W * reservoir.M;
 
-    if(!reservoir.isVisCheck && checkVisibility){
+    if(forceVisCheck){
         reservoir.isVisCheck = true;
-        storeVisibility(reservoir, Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight), discardIfInvisible);
+        storeVisibility(reservoir, Unoccluded(gBuffer.isect->intr, reservoir.ls->pLight), discardIfInvisible);
     }
+    else if(!reservoir.isVisCheck && checkVis){
+        reservoir.isVisCheck = true;
+        storeVisibility(reservoir, Unoccluded(gBuffer.isect->intr, reservoir.ls->pLight), discardIfInvisible);
+    }
+}
+
+void ReSTIRIntegrator::finalResampling(PTReservoir &reservoir){
+    Float p_hat = reservoir.target.ToLuminanceDisableWavelengthV2();
+    if(p_hat == 0 || reservoir.M == 0)
+        reservoir.W = 0;
+    else
+        reservoir.W = (reservoir.W / reservoir.M) / p_hat;
+}
+
+void ReSTIRIntegrator::prepareMerge(PTReservoir &reservoir){
+    reservoir.W = reservoir.target.ToLuminanceDisableWavelengthV2() * reservoir.W * reservoir.M;
 }
 
 void ReSTIRIntegrator::storeVisibility(DIReservoir &reservoir, bool visibility, bool discardIfInvisible){
@@ -1086,54 +1181,347 @@ void ReSTIRIntegrator::storeVisibility(DIReservoir &reservoir, bool visibility, 
     }
 }
 
-bool ReSTIRIntegrator::checkNormalSimilar(Normal3f n1, Normal3f n2, float threshold){
+bool ReSTIRIntegrator::checkNormalSimilar(Normal3f n1, Normal3f n2, Float threshold){
     return Dot(n1, n2) >= threshold;
 }
 
-bool ReSTIRIntegrator::checkDepthSimilar(Float d1, Float d2, float threshold){
+bool ReSTIRIntegrator::checkDepthSimilar(Float d1, Float d2, Float threshold){
     return std::abs(d1 - d2) <= threshold * std::max(d1, d2);
 }
 
- // combine reservoir temporal
-void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, const RayStageBuffer &dstRs, const RayBounceBuffer &dstRb, Sampler &sampler){
+void ReSTIRIntegrator::IntersectSurfaces(RayBounceBuffer &rbBuffer, GBuffer &gBuffer){
+    if(!rbBuffer.ray)
+        return;
+
+    pstd::optional<ShapeIntersection> si = Intersect(rbBuffer.ray.value());
+
+    if(si)
+        gBuffer.isect = si;
+}
+
+void ReSTIRIntegrator::HitEmittedLight(RayBounceBuffer &rbBuffer, ReconnectData &rc, GBuffer &gBuffer, DIReservoir& diReservoir, PTReservoir &ptReservoir, ScratchBuffer &scratchBuffer, Sampler &sampler, RandomSeedCache &rand){
+    if(!rbBuffer.ray)
+        return;
+
+    SampledSpectrum Lr;
+    SampledSpectrum reconnectIrradiance;
+    // Add emitted light at intersection point or from the environment
+    //TODO:: 
+    if (!gBuffer.isect) { /*hit background*/
+        // Incorporate emission from infinite lights for escaped ray
+        for (const auto &light : infiniteLights) {
+            SampledSpectrum Le = light.Le(rbBuffer.ray.value(), rbBuffer.lambda);
+            if (rbBuffer.depth == 1 || (rbBuffer.specularBounce && !disableBSDFLightSample) || (!disableBSDFLightSample && disableSampleFromLightSample)){
+                Lr = rbBuffer.beta * Le;
+                reconnectIrradiance = Le;
+            }
+            else if(!disableBSDFLightSample && !disableSampleFromLightSample) {
+                // TODO:: SampleLights sample infinte light and combine with mis
+
+                // Compute MIS weight for area light
+                // Light areaLight(gBuffer.isect->intr.areaLight);
+                // // pdf of Le draw by sample from light (Sample light * Sample point on light)
+                // Float light_pdf = lightSampler.PMF(rbBuffer.prevIsect.intr, areaLight) *
+                //             areaLight.PDF_Li(rbBuffer.prevIsect.intr, rbBuffer.ray->d, true);
+                // Float misWeight = PowerHeuristic(1, rbBuffer.ray_pdf, 1, light_pdf);
+
+                Float misWeight = 1.0f;
+
+                Lr = rbBuffer.beta * Le * misWeight;
+                reconnectIrradiance = Le * misWeight;
+            }
+        }
+
+        // rc.reconnectIrradiance = rbBuffer.beta * Le / rbBuffer.rc_beta;
+
+        // case 1 & hit infinite light
+        // if(rbBuffer.depth == 2 && rc.rcType == 0
+        //     && (rbBuffer.prevBsdf) && (rbBuffer.prevIsect)){
+        //     rc.rc_wi = -rbBuffer.ray->d;
+        //     rc.rcType = 1;
+        //     rc.isHitEmissive = true;
+        // }
+        // // case 2 & hit infinite light
+        // else if(rbBuffer.depth > 2 && rc.rcType == 0
+        //     && (rbBuffer.prevBsdf) && (rbBuffer.prevIsect) && (rbBuffer.prev_prevBsdf)
+        //     && IsNonSpecular(rbBuffer.prevBsdf->Flags()) && IsNonSpecular(rbBuffer.prev_prevBsdf->Flags())){
+        //     rc.rc_isect = rbBuffer.prevIsect;
+        //     rc.rc_bsdf = rbBuffer.prevBsdf;
+        //     rc.sampledLight = diReservoir.sampledLight;
+        //     rc.uLight = diReservoir.uv;
+        //     rc.rcType = 2;
+        //     rc.isHitEmissive = true;
+        // }
+
+        // rc.reconnectIrradiance = rbBuffer.beta * reconnectIrradiance / rbBuffer.rc_beta;
+
+        // /*sourcePdf of GI should be product of each bounce pdf, use one here cause we already multiply in beta and multiply in Lr */
+        // if(!isFirstRay && streamReservoir(ptReservoir, Lr.ToLuminanceDisableWavelengthV2(), 1.0f, sampler))
+        // {
+        //     ptReservoir.target = Lr;
+
+        //     ptReservoir.rc = rc;
+        // }
+
+        // if(rc.rcType == 2 || rc.rcType == 1)
+        //     rc.rcType = 0;
+        
+        if(isFirstRay)
+            rbBuffer.L += Lr;
+
+        rbBuffer.ray.reset();
+        return;
+    }
+
+
+    Float light_pdf = 0.0f;
+    // Incorporate emission from surface hit by ray
+    /*check hit light source*/
+    // TODO:: DI's RIS sample from brdf (fix sampleLight & HitEmissive)
+    SampledSpectrum Le = gBuffer.isect->intr.Le(-rbBuffer.ray->d, rbBuffer.lambda);
+    Float misWeight = 1.0f;
+    if (Le) { /*hit light source*/
+        // there 3 condition we don't use MIS combine,
+        // the bounce is first hit,
+        // the bounce is spawn by full specular surface
+        // we disable all BSDF light sample
+        // TODO:: take DI's RIS result and stream into PT's RIS
+        if (rbBuffer.depth == 1 || (rbBuffer.specularBounce && !disableBSDFLightSample) || (!disableBSDFLightSample && disableSampleFromLightSample)){
+            Lr = rbBuffer.beta * Le;
+            rc.reconnectIrradiance = rbBuffer.rc_beta * Le;
+        }
+        else if(!disableBSDFLightSample && !disableSampleFromLightSample) {
+            // Compute MIS weight for area light
+            Light areaLight(gBuffer.isect->intr.areaLight);
+            // pdf of Le draw by sample from light (Sample light * Sample point on light)
+            light_pdf = lightSampler.PMF(rbBuffer.prevIsect->intr, areaLight) *
+                        areaLight.PDF_Li(rbBuffer.prevIsect->intr, rbBuffer.ray->d, true);
+            misWeight = PowerHeuristic(1, rbBuffer.ray_pdf, 1, light_pdf);
+
+            Lr = rbBuffer.beta * Le * misWeight;
+            rc.reconnectIrradiance = rbBuffer.rc_beta * Le * misWeight;
+        }
+
+        
+
+        pstd::optional<BSDF> prev_bsdf = {};
+        if(rbBuffer.prevIsect && rbBuffer.prevRay)
+            prev_bsdf = rbBuffer.prevIsect->intr.GetBSDF(rbBuffer.prevRay.value(), rbBuffer.lambda, camera, scratchBuffer, sampler);
+
+        pstd::optional<BSDF> prev_prev_bsdf = {};
+        if(rbBuffer.prev_prevIsect && rbBuffer.prev_prevRay)
+            prev_prev_bsdf = rbBuffer.prev_prevIsect->intr.GetBSDF(rbBuffer.prev_prevRay.value(), rbBuffer.lambda, camera, scratchBuffer, sampler);
+
+        // case 1 & hit local light
+        if(rbBuffer.depth == 2 && rc.rcType == 0){
+            rc.rc_wi = -rbBuffer.ray->d;
+            rc.rc_Le_isect = gBuffer.isect.value();
+            rc.lightPdf = light_pdf;
+            rc.rcType = 1;
+            rc.isHitEmissive = true;
+            rc.isNEE = false;
+        }// case 2 & hit local light
+        else if(rc.rcType == 3 && rc.pathLength == rbBuffer.depth){
+            rc.reconnectIrradiance = Le;
+            rc.lightPdf = light_pdf;
+            rc.rcType = 2;
+            rc.isHitEmissive = true;
+            rc.isNEE = false;
+        }
+
+    }
+
+    
+    if(isFirstRay)
+        rbBuffer.L += Lr;
+
+    /*sourcePdf of GI should be product of each bounce pdf, use one here cause we already multiply in beta and multiply in Lr */
+    if(!isFirstRay && streamReservoir(ptReservoir, Lr.ToLuminanceDisableWavelengthV2(), 1.0f, sampler))
+    {
+        ptReservoir.target = Lr;
+
+        ptReservoir.rc = rc;
+    }
+
+    
+
+    if(rc.rcType == 1){
+        rc.rcType = 0;
+        rc.isHitEmissive = false;
+        rc.isNEE = false;
+    }
+    else if(rc.rcType == 2){
+        rc.rcType = 3;
+        rc.isHitEmissive = false;
+        rc.isNEE = false;
+    }
+
+    rbBuffer.depth++;
+    if(rbBuffer.depth > maxDepth)
+    {
+        rbBuffer.ray.reset();
+        return;
+    }
+
+    if(allFinished)
+        allFinished = false;
+
+}
+
+void ReSTIRIntegrator::GetBSDF(RayBounceBuffer &rbBuffer, GBuffer &gBuffer, ScratchBuffer &scratchBuffer, Sampler &sampler){
+    if(!rbBuffer.ray)
+        return;
+    // Get BSDF and skip over medium boundaries
+    // TODO:: get simpify bsdf
+    gBuffer.bsdf = gBuffer.isect->intr.GetBSDF(rbBuffer.ray.value(), rbBuffer.lambda, camera, scratchBuffer, sampler);
+    if (!gBuffer.bsdf) {
+        rbBuffer.specularBounce = true;  // disable MIS if the indirect ray hits a light
+        gBuffer.isect->intr.SkipIntersection(&rbBuffer.ray.value(), gBuffer.isect->tHit);
+        return;
+    }
+
+    // Possibly regularize the BSDF
+    if (regularize && rbBuffer.anyNonSpecularBounces) {
+        gBuffer.bsdf->Regularize();
+    }
+}
+// sample light with WRS
+void ReSTIRIntegrator::SampleLights(RayBounceBuffer &rbBuffer, GBuffer &gBuffer, Sampler &sampler, DIReservoir &diReservoir){
+    if(!rbBuffer.ray)
+        return;
+
+    if (!gBuffer.bsdf)
+        return;
+
+    if (!IsNonSpecular(gBuffer.bsdf->Flags()))
+        return;
+    // Initialize _LightSampleContext_ for light sampling
+    LightSampleContext ctx(gBuffer.isect->intr);
+    // Try to nudge the light sampling position to correct side of the surface
+    BxDFFlags flags = gBuffer.bsdf->Flags();
+    if (IsReflective(flags) && !IsTransmissive(flags))
+        ctx.pi = gBuffer.isect->intr.OffsetRayOrigin(gBuffer.isect->intr.wo);
+    else if (IsTransmissive(flags) && !IsReflective(flags))
+        ctx.pi = gBuffer.isect->intr.OffsetRayOrigin(-gBuffer.isect->intr.wo);
+
+    DIReservoir localLight;
+
+    // cache random seed before sampling
+    Point2i cached_p;
+    int cached_sampleIndex = 0;
+    int cached_dimension = 0;
+
+    // Choose a light source with WRS for direct lighting calculation
+    // Sample local light
+    int sampleNum = isFirstRay ? restirDISetting.numLocalLightSample : restirPTSetting.numLocalLightSample;
+    for(int i = 0;i < sampleNum; ++i)
+    {
+        // Sample a light in lightSampler pool
+        Float u = sampler.Get1D();
+        pstd::optional<SampledLight> sampledLight = lightSampler.Sample(ctx, u);
+        Point2f uLight = sampler.Get2D();
+        if (!sampledLight || !sampledLight->p){    
+            localLight.M++;
+            continue;
+        }
+
+        // Sample a point on the light source for direct lighting
+        Light light = sampledLight->light;
+        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, rbBuffer.lambda, true);
+        if (!ls || !ls->L || ls->pdf == 0){    
+            localLight.M++;
+            continue;
+        }
+
+         // Evaluate BSDF for light sample and check light visibility
+        Vector3f wo = gBuffer.isect->intr.wo, wi = ls->wi;
+        SampledSpectrum f = gBuffer.bsdf->f(wo, wi);
+        if(!IsMetalRoughness(gBuffer.bsdf->Flags()))
+            f *= AbsDot(wi, gBuffer.isect->intr.shading.n);
+        if(!f){    
+            localLight.M++;
+            continue;
+        }
+
+        // RIS source PDF
+        Float source_p = sampledLight->p * ls->pdf;
+
+        // RIS f(x)
+        SampledSpectrum w_ld = ClampZero(ls->L) * f;
+
+        // RIS's misweight
+        Float brdf_pdf =  gBuffer.bsdf->PDF(wo, wi);
+
+        // TODO::DI RIS can't use mis? should fix whole pipeline
+        Float misWeight = PowerHeuristic(sampleNum, source_p, 1, brdf_pdf);
+
+        // RIS target PDF
+        Float target_p = w_ld.ToLuminanceDisableWavelengthV2();
+
+        if(/*isFirstRay &&*/ streamReservoir(localLight, target_p, source_p, sampler))
+        {
+            localLight.targetPdf = target_p;
+            localLight.uv = uLight;
+            localLight.sampledLight = sampledLight;
+            localLight.ls = ls;
+            localLight.w_ld = w_ld;
+        }
+
+
+    }
+
+    // TODO:: sample infinte light
+
+    diReservoir = localLight;
+
+    // diReservoir.M = 1;
+    finalResampling(diReservoir, gBuffer, restirDISetting.risCheckVis, false, restirDISetting.risDiscardInVis);
+}
+
+ // combine DI reservoir temporal
+void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<GBuffer> &prevGBuffers, DIReservoir &dstReservoir, const GBuffer &dstGbuffer, const RayBounceBuffer &dstRb, Sampler &sampler){
     
     if(!dstRb.ray)
         return;
 
-    if (!dstRs.bsdf)
+    if (!dstGbuffer.bsdf)
         return;
 
-    if (!dstRs.isect)
+    if (!dstGbuffer.isect)
         return;
+        
+    Point2i prevPixel;
 
-    //TODO:: motion vector to get pPixel
-    Float prevTime = currentTime - 1.0f / totalFrame;
-    if(prevTime < 0.f)
-        return;
-    
-    Point3f prevPos = camera.reProjected(dstRs.isect->intr.p(), prevTime);
-    Point2i prevPixel = Point2i(prevPos.x, prevPos.y);
-    
-    if(prevPixel.x < 0 || prevPixel.y < 0 || prevPixel.x >= prevReservoirs.XSize() || prevPixel.y >= prevReservoirs.YSize())
-        return;
-
-    // Point2i prevPixel = pPixel;
+    // get prev pixel pos
+    if(currentSampleIndex != 0)
+        prevPixel = pPixel;
+    else{
+        Float prevTime = currentTime - 1.0f / totalFrame;
+        if(prevTime < 0.f)
+            return;
+        
+        Point3f prevPos = camera.reProjected(dstGbuffer.isect->intr.p(), prevTime);
+        prevPixel = Point2i(prevPos.x, prevPos.y);
+        
+        if(prevPixel.x < 0 || prevPixel.y < 0 || prevPixel.x >= prevReservoirs.XSize() || prevPixel.y >= prevReservoirs.YSize())
+            return;
+    }
 
     DIReservoir& prevReservoir = prevReservoirs[prevPixel];
-    const RayStageBuffer& prevRs = prevRsBuffers[prevPixel];
+    const GBuffer& prevGBuffer = prevGBuffers[prevPixel];
     dstReservoir.weightSum = dstReservoir.targetPdf * dstReservoir.W * dstReservoir.M;
-    prevReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * std::max<int>(restirSetting.numLocalLightDISample, dstReservoir.M)), prevReservoir.M);
+    prevReservoir.M = std::min<int>(std::min<int>(1024, restirDISetting.historyLimit * std::max<int>(restirDISetting.numLocalLightSample, dstReservoir.M)), prevReservoir.M);
     // prevReservoir.weightSum = prevReservoir.targetPdf * prevReservoir.W * prevReservoir.M;
 
-    if (!prevRs.bsdf){
+    if (!prevGBuffer.bsdf){
         return;
     }
-    if (!prevRs.isect){
+    if (!prevGBuffer.isect){
         return;
     }
 
     Float rng = sampler.Get1D();
-    if(prevReservoir.age > restirSetting.maxAge  * (0.5 + rng * 0.5)){
+    if(prevReservoir.age > restirDISetting.maxAge  * (0.5 + rng * 0.5)){
         return;
     }
 
@@ -1144,35 +1532,31 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     // if(!prevReservoir.visibility)
     //     return;
 
-    if(!checkNormalSimilar(prevRs.isect.value().intr.n, dstRs.isect.value().intr.n, restirSetting.Nthreshold)
-        || !checkDepthSimilar(prevRs.isect->tHit, dstRs.isect->tHit, restirSetting.Dthreshold)){
+    if(!checkNormalSimilar(prevGBuffer.isect.value().intr.n, dstGbuffer.isect.value().intr.n, restirDISetting.Nthreshold)
+        || !checkDepthSimilar(prevGBuffer.isect->tHit, dstGbuffer.isect->tHit, restirDISetting.Dthreshold)){
         return;
     }
 
     pstd::optional<SampledLight> sampledLight = prevReservoir.sampledLight;
     if (!sampledLight || !sampledLight->p){
-        if(!restirSetting.unbiased)
-            dstReservoir.M += prevReservoir.M;
-        // if(!restirSetting.isSpatial)
-            finalResampling(dstReservoir, dstRs, false, restirSetting.reUseVisibility);
+        // if(!restirDISetting.isSpatial)
+            finalResampling(dstReservoir, dstGbuffer, restirDISetting.temporalCheckVis, restirDISetting.temporalForceCheckVis, restirDISetting.temporalDiscardInVis);
         return;
     }
-    LightSampleContext ctx(dstRs.isect->intr);
+    LightSampleContext ctx(dstGbuffer.isect->intr);
     // Try to nudge the light sampling position to correct side of the surface
-    BxDFFlags flags = dstRs.bsdf->Flags();
+    BxDFFlags flags = dstGbuffer.bsdf->Flags();
     if (IsReflective(flags) && !IsTransmissive(flags))
-        ctx.pi = dstRs.isect->intr.OffsetRayOrigin(dstRs.isect->intr.wo);
+        ctx.pi = dstGbuffer.isect->intr.OffsetRayOrigin(dstGbuffer.isect->intr.wo);
     else if (IsTransmissive(flags) && !IsReflective(flags))
-        ctx.pi = dstRs.isect->intr.OffsetRayOrigin(-dstRs.isect->intr.wo);
+        ctx.pi = dstGbuffer.isect->intr.OffsetRayOrigin(-dstGbuffer.isect->intr.wo);
 
     Point2f uLight = prevReservoir.uv;
     Light light = sampledLight->light;
     pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, dstRb.lambda, true);
     if (!ls || !ls->L || ls->pdf == 0){
-        if(!restirSetting.unbiased)
-            dstReservoir.M += prevReservoir.M;
-        // if(!restirSetting.isSpatial)
-            finalResampling(dstReservoir, dstRs, false, restirSetting.reUseVisibility);
+        // if(!restirDISetting.isSpatial)
+            finalResampling(dstReservoir, dstGbuffer, restirDISetting.temporalCheckVis, restirDISetting.temporalForceCheckVis, restirDISetting.temporalDiscardInVis);
         return;
     }
 
@@ -1185,24 +1569,23 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     // }
 
     // Evaluate BSDF for light sample and check light visibility
-    Vector3f wo = dstRs.isect->intr.wo, wi = ls->wi;
-    pstd::optional<BSDF> bsdf = dstRs.bsdf;
+    Vector3f wo = dstGbuffer.isect->intr.wo, wi = ls->wi;
+    pstd::optional<BSDF> bsdf = dstGbuffer.bsdf;
     SampledSpectrum f = bsdf->f(wo, wi);
     if(!IsMetalRoughness(bsdf->Flags()))
-        f *= AbsDot(wi, dstRs.isect->intr.shading.n);
+        f *= AbsDot(wi, dstGbuffer.isect->intr.shading.n);
     if(!f){
-        if(!restirSetting.unbiased)
             dstReservoir.M += prevReservoir.M;
-        // if(!restirSetting.isSpatial)
-            finalResampling(dstReservoir, dstRs, false, restirSetting.reUseVisibility);
+        // if(!restirDISetting.isSpatial)
+            finalResampling(dstReservoir, dstGbuffer, restirDISetting.temporalCheckVis, restirDISetting.temporalForceCheckVis, restirDISetting.temporalDiscardInVis);
         return;
     }
 
     if(!prevReservoir.targetPdf){
-        // if(!restirSetting.unbiased)
+        // if(!restirDISetting.unbiased)
         //     dstReservoir.M += prevReservoir.M;
-        // if(!restirSetting.isSpatial)
-        //     finalResampling(dstReservoir, dstRs, !restirSetting.isSpatial, restirSetting.reUseVisibility);
+        // if(!restirDISetting.isSpatial)
+        //     finalResampling(dstReservoir, dstRs, !restirDISetting.isSpatial, restirDISetting.reUseVisibility);
         return;
     }
     // RIS target PDF
@@ -1211,13 +1594,14 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     SampledSpectrum w_ld = ClampZero(ls->L) * f;
 
     // target_p += w_ld.ToLuminance(dstRb.lambda);
-    target_p += w_ld.ToLuminanceDisableWavelength();
+    target_p += w_ld.ToLuminanceDisableWavelengthV2();
 
     if(combineReservoir(dstReservoir, prevReservoir, target_p, sampler))
     {
         dstReservoir.uv = uLight;
         dstReservoir.sampledLight = sampledLight;
         dstReservoir.ls = ls;
+        dstReservoir.w_ld = w_ld;
         dstReservoir.spatialDistance = prevReservoir.spatialDistance;
         dstReservoir.age = prevReservoir.age;
         dstReservoir.age++;
@@ -1265,43 +1649,43 @@ void ReSTIRIntegrator::TemporalResample(Point2i pPixel, Array2D<DIReservoir> &pr
     //
     // dstReservoir.M = unBiasedM;
 
-    // if(!restirSetting.isSpatial)
-        finalResampling(dstReservoir, dstRs, false, restirSetting.reUseVisibility);
+    // if(!restirDISetting.isSpatial)
+    finalResampling(dstReservoir, dstGbuffer, restirDISetting.temporalCheckVis, restirDISetting.temporalForceCheckVis, restirDISetting.temporalDiscardInVis);
 }
 
-// combine reservoir spatial
-void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir> &srcReservoir, const Array2D<RayStageBuffer> &srcRs, const Array2D<RayBounceBuffer> &srcRb, DIReservoir &dstReservoir, Sampler &sampler){
-    const RayStageBuffer& centerRs = srcRs[pPixel];
-    const RayBounceBuffer& centerRb = srcRb[pPixel];
+// combine DI reservoir spatial
+void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir> &srcReservoir, const Array2D<GBuffer> &srcGBuffers, const Array2D<RayBounceBuffer> &srcRb, DIReservoir &dstReservoir, Sampler &sampler){
+    const GBuffer& dstGBuffer = srcGBuffers[pPixel];
+    const RayBounceBuffer& dstRbBuffer = srcRb[pPixel];
     dstReservoir = srcReservoir[pPixel];
     
-    if(!centerRb.ray)
+    if(!dstRbBuffer.ray)
         return;
 
-    if (!centerRs.bsdf)
+    if (!dstGBuffer.bsdf)
         return;
 
-    if (!centerRs.isect)
+    if (!dstGBuffer.isect)
         return;
 
-    if(!restirSetting.isTemporal)
+    if(!restirDISetting.isTemporal)
         dstReservoir.weightSum = dstReservoir.targetPdf * dstReservoir.W * dstReservoir.M;
     // std::vector<Point2i> offsetPixelUnbiased;
 
     // Sample a point on the light source for direct lighting
     // Initialize _LightSampleContext_ for light sampling
-    LightSampleContext ctx(centerRs.isect->intr);
+    LightSampleContext ctx(dstGBuffer.isect->intr);
     // Try to nudge the light sampling position to correct side of the surface
-    BxDFFlags flags = centerRs.bsdf->Flags();
+    BxDFFlags flags = dstGBuffer.bsdf->Flags();
     if (IsReflective(flags) && !IsTransmissive(flags))
-        ctx.pi = centerRs.isect->intr.OffsetRayOrigin(centerRs.isect->intr.wo);
+        ctx.pi = dstGBuffer.isect->intr.OffsetRayOrigin(dstGBuffer.isect->intr.wo);
     else if (IsTransmissive(flags) && !IsReflective(flags))
-        ctx.pi = centerRs.isect->intr.OffsetRayOrigin(-centerRs.isect->intr.wo);
+        ctx.pi = dstGBuffer.isect->intr.OffsetRayOrigin(-dstGBuffer.isect->intr.wo);
 
-    for (size_t i = 0; i < restirSetting.numSpatialSamples; i++)
+    for (size_t i = 0; i < restirDISetting.numSpatialSamples; i++)
     {
         Point2f uv = sampler.Get2D();
-        Point2i offset = Point2i(((uv - Point2f(0.5f, 0.5f)) * restirSetting.spatialRadius ));
+        Point2i offset = Point2i(((uv - Point2f(0.5f, 0.5f)) * restirDISetting.spatialRadius ));
         Point2i offsetPixel = pPixel + offset;
         offsetPixel.x = pbrt::Clamp(offsetPixel.x, 0, srcReservoir.XSize() - 1);
         offsetPixel.y = pbrt::Clamp(offsetPixel.y, 0, srcReservoir.YSize() - 1);
@@ -1309,77 +1693,72 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
         if(offsetPixel == pPixel)
             continue;
 
-        const RayStageBuffer& spatialRsBuffer = srcRs[offsetPixel];
+        const GBuffer& spatialGBuffer = srcGBuffers[offsetPixel];
         const RayBounceBuffer& spatialRbBuffer = srcRb[offsetPixel];
         DIReservoir spatialReservoir = srcReservoir[offsetPixel];
-        spatialReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * std::max<int>(restirSetting.numLocalLightDISample, dstReservoir.M)), spatialReservoir.M);
+        spatialReservoir.M = std::min<int>(std::min<int>(1024, restirDISetting.historyLimit * std::max<int>(restirDISetting.numLocalLightSample, dstReservoir.M)), spatialReservoir.M);
 
         if(!spatialRbBuffer.ray)
             continue;
 
-        if(!spatialRsBuffer.bsdf)
+        if(!spatialGBuffer.bsdf)
             continue;
 
-        if(!spatialRsBuffer.isect)
+        if(!spatialGBuffer.isect)
             continue;
 
         if(!spatialReservoir.M)
             continue;
 
-        if(!checkNormalSimilar(spatialRsBuffer.isect.value().intr.n, centerRs.isect.value().intr.n, restirSetting.Nthreshold)
-            || !checkDepthSimilar(spatialRsBuffer.isect->tHit, centerRs.isect->tHit, restirSetting.Dthreshold))
+        if(!checkNormalSimilar(spatialGBuffer.isect.value().intr.n, dstGBuffer.isect.value().intr.n, restirDISetting.Nthreshold)
+            || !checkDepthSimilar(spatialGBuffer.isect->tHit, dstGBuffer.isect->tHit, restirDISetting.Dthreshold))
             continue;
 
-        // if(Length(Vector2f(spatialReservoir.spatialDistance + offset)) > restirSetting.maxSpatialDistance)
+        // if(Length(Vector2f(srcReservoir.spatialDistance + offset)) > restirDISetting.maxSpatialDistance)
         //     continue;
 
-        // if(!spatialReservoir.visibility)
+        // if(!srcReservoir.visibility)
         //     continue;
         // offsetPixelUnbiased.push_back(offsetPixel);
 
         pstd::optional<SampledLight> sampledLight = spatialReservoir.sampledLight;
         if (!sampledLight || !sampledLight->p){
-            // if(!restirSetting.unbiased)
+            // if(!restirDISetting.unbiased)
                 dstReservoir.M += spatialReservoir.M;
-            // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
+            // finalResampling(dstReservoir, dstGBuffer, false, restirDISetting.reUseVisibility);
             continue;
         }
 
 
         Point2f uLight = spatialReservoir.uv;
         Light light = sampledLight->light;
-        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, centerRb.lambda, true);
+        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, dstRbBuffer.lambda, true);
         if (!ls || !ls->L || ls->pdf == 0){
-            if(!restirSetting.unbiased)
-                dstReservoir.M += spatialReservoir.M;
-                
-            // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
+            // finalResampling(dstReservoir, dstGBuffer, false, restirDISetting.reUseVisibility);
 
             continue;
         }
 
-        // if(reUseVisibility && !spatialReservoir.visibility){
-        //     dstReservoir.M += spatialReservoir.M;
+        // if(reUseVisibility && !srcReservoir.visibility){
+        //     dstReservoir.M += srcReservoir.M;
         //     continue;
         // }
 
         // Evaluate BSDF for light sample and check light visibility
-        Vector3f wo = centerRs.isect->intr.wo, wi = ls->wi;
-        pstd::optional<BSDF> bsdf = centerRs.bsdf;
+        Vector3f wo = dstGBuffer.isect->intr.wo, wi = ls->wi;
+        pstd::optional<BSDF> bsdf = dstGBuffer.bsdf;
         SampledSpectrum f = bsdf->f(wo, wi);
         if(!IsMetalRoughness(bsdf->Flags()))
-            f *= AbsDot(wi, centerRs.isect->intr.shading.n);
+            f *= AbsDot(wi, dstGBuffer.isect->intr.shading.n);
         if(!f){
-            if(!restirSetting.unbiased)
-                dstReservoir.M += spatialReservoir.M;
-            // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
+            // finalResampling(dstReservoir, dstGBuffer, false, restirDISetting.reUseVisibility);
             continue;
         }
 
         if(!spatialReservoir.targetPdf){
-            // if(!restirSetting.unbiased)
-            //     dstReservoir.M += spatialReservoir.M;
-            // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
+            // if(!restirDISetting.unbiased)
+            //     dstReservoir.M += srcReservoir.M;
+            // finalResampling(dstReservoir, dstGBuffer, false, restirDISetting.reUseVisibility);
             continue;
         }
 
@@ -1388,20 +1767,21 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
         // RIS f(x)
         SampledSpectrum w_ld = ClampZero(ls->L) * f;
 
-        // target_p += w_ld.ToLuminance(centerRb.lambda);
-        target_p += w_ld.ToLuminanceDisableWavelength();
+        // target_p += w_ld.ToLuminance(dstRbBuffer.lambda);
+        target_p += w_ld.ToLuminanceDisableWavelengthV2();
 
         if(combineReservoir(dstReservoir, spatialReservoir, target_p, sampler))
         {
             dstReservoir.uv = uLight;
             dstReservoir.sampledLight = sampledLight;
             dstReservoir.ls = ls;
+            dstReservoir.w_ld = w_ld;
             dstReservoir.spatialDistance = spatialReservoir.spatialDistance + offsetPixel;
             dstReservoir.age = spatialReservoir.age;
             dstReservoir.age++;
         }
 
-        // finalResampling(dstReservoir, centerRs, false, restirSetting.reUseVisibility);
+        // finalResampling(dstReservoir, dstGBuffer, false, restirDISetting.reUseVisibility);
     }
 
     // unbiased test
@@ -1451,17 +1831,17 @@ void ReSTIRIntegrator::SpatialResample(Point2i pPixel, const Array2D<DIReservoir
     //
     // dstReservoir.M = unBiasedM;
 
-    finalResampling(dstReservoir, centerRs, restirSetting.reUseVisibility, restirSetting.reUseVisibility);
+    finalResampling(dstReservoir, dstGBuffer, restirDISetting.spatialCheckVis, restirDISetting.spatialForceCheckVis, restirDISetting.spatialDiscardInVis);
 }
 
-void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<RayStageBuffer> &prevRsBuffers, DIReservoir &dstReservoir, RayStageBuffer &dstRs, RayBounceBuffer &dstRb, Sampler &sampler){
+void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservoir> &prevReservoirs, const Array2D<GBuffer> &prevGBuffers, DIReservoir &dstReservoir, GBuffer &dstGBuffer, RayBounceBuffer &dstRb, Sampler &sampler){
     if(!dstRb.ray)
         return;
 
-    if (!dstRs.bsdf)
+    if (!dstGBuffer.bsdf)
         return;
 
-    if (!dstRs.isect)
+    if (!dstGBuffer.isect)
         return;
 
     //TODO:: motion vector to get pPixel
@@ -1473,22 +1853,22 @@ void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservo
     Point2i prevPixel = pPixel;
 
     // Initialize _LightSampleContext_ for light sampling
-    LightSampleContext ctx(dstRs.isect->intr);
+    LightSampleContext ctx(dstGBuffer.isect->intr);
     // Try to nudge the light sampling position to correct side of the surface
-    BxDFFlags flags = dstRs.bsdf->Flags();
+    BxDFFlags flags = dstGBuffer.bsdf->Flags();
     if (IsReflective(flags) && !IsTransmissive(flags))
-        ctx.pi = dstRs.isect->intr.OffsetRayOrigin(dstRs.isect->intr.wo);
+        ctx.pi = dstGBuffer.isect->intr.OffsetRayOrigin(dstGBuffer.isect->intr.wo);
     else if (IsTransmissive(flags) && !IsReflective(flags))
-        ctx.pi = dstRs.isect->intr.OffsetRayOrigin(-dstRs.isect->intr.wo);
+        ctx.pi = dstGBuffer.isect->intr.OffsetRayOrigin(-dstGBuffer.isect->intr.wo);
 
-    for (size_t i = 0; i < restirSetting.numSpatialSamples; i++)
+    for (size_t i = 0; i < restirDISetting.numSpatialSamples; i++)
     {
         Point2i offsetPixel;
         if(i == 0)
             offsetPixel = prevPixel;
         else{
             Point2f uv = sampler.Get2D();
-            offsetPixel = pPixel + Point2i(((uv - Point2f(0.5f, 0.5f)) * restirSetting.spatialRadius ));
+            offsetPixel = pPixel + Point2i(((uv - Point2f(0.5f, 0.5f)) * restirDISetting.spatialRadius ));
             offsetPixel.x = pbrt::Clamp(offsetPixel.x, 0, prevReservoirs.XSize() - 1);
             offsetPixel.y = pbrt::Clamp(offsetPixel.y, 0, prevReservoirs.YSize() - 1);
         }
@@ -1496,58 +1876,58 @@ void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservo
         if(i != 0 && offsetPixel == pPixel)
             continue;
 
-        const RayStageBuffer& spatialRsBuffer = prevRsBuffers[offsetPixel];
-        DIReservoir spatialReservoir = prevReservoirs[offsetPixel];
-        spatialReservoir.M = std::min<int>(std::min<int>(1024, restirSetting.historyLimit * dstReservoir.M), spatialReservoir.M);
+        const GBuffer& spatialGBuffer = prevGBuffers[offsetPixel];
+        DIReservoir srcReservoir = prevReservoirs[offsetPixel];
+        srcReservoir.M = std::min<int>(std::min<int>(1024, restirDISetting.historyLimit * dstReservoir.M), srcReservoir.M);
 
-        if(!spatialRsBuffer.bsdf)
+        if(!spatialGBuffer.bsdf)
             continue;
 
-        if(!spatialRsBuffer.isect)
+        if(!spatialGBuffer.isect)
             continue;
 
-        if(!spatialReservoir.M)
+        if(!srcReservoir.M)
             continue;
 
-        if(!checkNormalSimilar(spatialRsBuffer.isect.value().intr.n, dstRs.isect.value().intr.n, restirSetting.Nthreshold)
-            || !checkDepthSimilar(spatialRsBuffer.isect->tHit, dstRs.isect->tHit, restirSetting.Dthreshold))
+        if(!checkNormalSimilar(spatialGBuffer.isect.value().intr.n, dstGBuffer.isect.value().intr.n, restirDISetting.Nthreshold)
+            || !checkDepthSimilar(spatialGBuffer.isect->tHit, dstGBuffer.isect->tHit, restirDISetting.Dthreshold))
             continue;
 
         // offsetPixelUnbiased.push_back(offsetPixel);
 
-        // if(!spatialReservoir.targetPdf){
-        //     dstReservoir.M += spatialReservoir.M;
+        // if(!srcReservoir.targetPdf){
+        //     dstReservoir.M += srcReservoir.M;
         //     continue;
         // }
 
-        pstd::optional<SampledLight> sampledLight = spatialReservoir.sampledLight;
+        pstd::optional<SampledLight> sampledLight = srcReservoir.sampledLight;
         if (!sampledLight || !sampledLight->p){
-            dstReservoir.M += spatialReservoir.M;
+            dstReservoir.M += srcReservoir.M;
             continue;
         }
 
 
-        Point2f uLight = spatialReservoir.uv;
+        Point2f uLight = srcReservoir.uv;
         Light light = sampledLight->light;
         pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, dstRb.lambda, true);
         if (!ls || !ls->L || ls->pdf == 0){
-            dstReservoir.M += spatialReservoir.M;
+            dstReservoir.M += srcReservoir.M;
             continue;
         }
 
-        // if(reUseVisibility && !spatialReservoir.visibility){
-        //     dstReservoir.M += spatialReservoir.M;
+        // if(reUseVisibility && !srcReservoir.visibility){
+        //     dstReservoir.M += srcReservoir.M;
         //     continue;
         // }
 
         // Evaluate BSDF for light sample and check light visibility
-        Vector3f wo = dstRs.isect->intr.wo, wi = ls->wi;
-        pstd::optional<BSDF> bsdf = dstRs.bsdf;
+        Vector3f wo = dstGBuffer.isect->intr.wo, wi = ls->wi;
+        pstd::optional<BSDF> bsdf = dstGBuffer.bsdf;
         SampledSpectrum f = bsdf->f(wo, wi);
         if(!IsMetalRoughness(bsdf->Flags()))
-            f *= AbsDot(wi, dstRs.isect->intr.shading.n);
+            f *= AbsDot(wi, dstGBuffer.isect->intr.shading.n);
         if(!f){
-            dstReservoir.M += spatialReservoir.M;
+            dstReservoir.M += srcReservoir.M;
             continue;
         }
 
@@ -1558,13 +1938,14 @@ void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservo
 
         target_p += w_ld.ToLuminance(dstRb.lambda);
 
-        if(combineReservoir(dstReservoir, spatialReservoir, target_p, sampler))
+        if(combineReservoir(dstReservoir, srcReservoir, target_p, sampler))
         {
             dstReservoir.uv = uLight;
             dstReservoir.sampledLight = sampledLight;
             dstReservoir.ls = ls;
-            dstReservoir.spatialDistance = spatialReservoir.spatialDistance + offsetPixel;
-            dstReservoir.age = spatialReservoir.age;
+            dstReservoir.w_ld = w_ld;
+            dstReservoir.spatialDistance = srcReservoir.spatialDistance + offsetPixel;
+            dstReservoir.age = srcReservoir.age;
             dstReservoir.age++;
         }
     }
@@ -1616,123 +1997,752 @@ void ReSTIRIntegrator::SpatialtemporalResample(Point2i pPixel, Array2D<DIReservo
     //
     // dstReservoir.M = unBiasedM;
 
-    finalResampling(dstReservoir, dstRs, restirSetting.reUseVisibility, restirSetting.reUseVisibility);
+    // finalResampling(dstReservoir, dstRs, restirDISetting.reUseVisibility, restirDISetting.reUseVisibility);
 }
 
-// sample light with WRS
-void ReSTIRIntegrator::SampleLights(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir &reservoir, Sampler &sampler){
-    if(!rbBuffer.ray)
-        return;
+bool ReSTIRIntegrator::ShiftReservoir(PTReservoir &dstReservoir, const PTReservoir &srcReservoir, const GBuffer &dstGBuffer, const GBuffer &srcGBuffer, const RayBounceBuffer &dstRbBuffer, SampledSpectrum &w_ld, Float &jacobian, ScratchBuffer &scratchBuffer, Sampler &sampler){
+    // if(srcReservoir.W == 0)
+    //     return false;
 
-    if (!rsBuffer.bsdf)
-        return;
+    if(srcReservoir.rc.rcType == 0){
+        return false;
+    }
+    // central path y0 <- y1 <- y2 <- y3 (base path)
+    // spatial path x0 <- x1 <- light(NEE or hitEmi)
+    // reconnect    y0 <- y1 <- light(NEE or hitEmi) (offset path)
+    else if(srcReservoir.rc.rcType == 1){
+        if(srcReservoir.rc.isHitEmissive){
+            Vector3f y1_wo = dstGBuffer.isect->intr.wo, y1_wi = Normalize(dstGBuffer.isect->intr.p() - srcReservoir.rc.rc_Le_isect.intr.p());
+            Vector3f x1_wo = srcGBuffer.isect->intr.wo, x1_wi = Normalize(srcGBuffer.isect->intr.p() - srcReservoir.rc.rc_Le_isect.intr.p());
 
-    if (!IsNonSpecular(rsBuffer.bsdf->Flags()))
-        return;
-    // Initialize _LightSampleContext_ for light sampling
-    LightSampleContext ctx(rsBuffer.isect->intr);
-    // Try to nudge the light sampling position to correct side of the surface
-    BxDFFlags flags = rsBuffer.bsdf->Flags();
-    if (IsReflective(flags) && !IsTransmissive(flags))
-        ctx.pi = rsBuffer.isect->intr.OffsetRayOrigin(rsBuffer.isect->intr.wo);
-    else if (IsTransmissive(flags) && !IsReflective(flags))
-        ctx.pi = rsBuffer.isect->intr.OffsetRayOrigin(-rsBuffer.isect->intr.wo);
+            // Le use target to ctx point
+            SampledSpectrum Le = srcReservoir.rc.rc_Le_isect.intr.Le(y1_wi, dstRbBuffer.lambda);
 
-    DIReservoir localLight;
-    // Choose a light source for the direct lighting calculation
-    // TODO:: different sample light method
-    for(int i = 0;i < restirSetting.numLocalLightDISample; ++i)
-    {
-        Float u = sampler.Get1D();
-        pstd::optional<SampledLight> sampledLight = lightSampler.Sample(ctx, u);
-        Point2f uLight = sampler.Get2D();
-        if (!sampledLight || !sampledLight->p){    
-            localLight.M++;
-            continue;
+            pstd::optional<BSDF> dst_bsdf = dstGBuffer.bsdf;
+            pstd::optional<BSDF> src_bsdf = srcGBuffer.bsdf;
+
+            if(!dst_bsdf || !src_bsdf)
+                return false;
+
+            // BSDF use ctx point to target as wi and wo
+            SampledSpectrum dstF1 = dst_bsdf->f(y1_wo, -y1_wi);
+            Float dstPDF1 = dst_bsdf->PDF(y1_wo, -y1_wi);
+            Float srcPDF1 = src_bsdf->PDF(x1_wo, -x1_wi);
+
+            if(!dstPDF1 || !srcPDF1)
+                return false;
+
+            // if(dstPDF1 == 0.0f)
+            //     return false;
+
+            jacobian = dstPDF1 / srcPDF1;
+
+            Float misWeight = PowerHeuristic(1, dstPDF1, 1, srcReservoir.rc.lightPdf);
+
+            // use target to ctx point
+            Vector3f dstConnectionV = y1_wi;
+            Vector3f srcConnectionV = x1_wi;
+
+            if(!dstGBuffer.isect || !srcGBuffer.isect)
+                return false;
+
+            Vector3f shiftedDisp = dstGBuffer.isect->intr.p() - srcReservoir.rc.rc_Le_isect.intr.p();
+            Float shifted_dist2 = Dot(shiftedDisp, shiftedDisp);
+            Float shifted_cosine = fabsf(Dot(srcReservoir.rc.rc_Le_isect.intr.n, -dstConnectionV));
+
+            // this can cache in reservoir?
+            Vector3f originalDisp = srcGBuffer.isect->intr.p() - srcReservoir.rc.rc_Le_isect.intr.p();
+            Float original_dist2 = Dot(originalDisp, originalDisp);
+            Float original_cosine = fabsf(Dot(srcReservoir.rc.rc_Le_isect.intr.n, -srcConnectionV));
+
+            if(!shifted_dist2 || !original_cosine)
+                return false;
+                
+            jacobian *= shifted_cosine / shifted_dist2 * original_dist2 / original_cosine;
+
+            w_ld = Le * dstF1 / dstPDF1 * misWeight;
+            
+            if(!jacobian)
+                return false;
+
+            Interaction l_sh = srcReservoir.rc.rc_Le_isect.intr;
+            Interaction g_sh = dstGBuffer.isect->intr;
+
+            // Visibility check between reconnect vertex
+            if(w_ld && !Unoccluded(g_sh, l_sh))
+                w_ld = SampledSpectrum(0.0f);
+            
+            // dstReservoir.target = SampledSpectrum(0.0f);
         }
+        else if(srcReservoir.rc.isNEE){
+            LightSampleContext dst_ctx(dstGBuffer.isect->intr);
+            // LightSampleContext src_ctx(srcGBuffer.isect->intr);
 
-        // Sample a point on the light source for direct lighting
-        Light light = sampledLight->light;
-        pstd::optional<LightLiSample> ls = light.SampleLi(ctx, uLight, rbBuffer.lambda, true);
-        if (!ls || !ls->L || ls->pdf == 0){    
-            localLight.M++;
-            continue;
+            pstd::optional<SampledLight> sampledLight = srcReservoir.rc.sampledLight;
+            if (!sampledLight || !sampledLight->p)
+                return false;
+
+            Point2f uLight = srcReservoir.rc.uLight;
+            Light light = sampledLight->light;
+            pstd::optional<LightLiSample> dst_ls = light.SampleLi(dst_ctx, uLight, dstRbBuffer.lambda, true);
+            // pstd::optional<LightLiSample> src_ls = light.SampleLi(src_ctx, uLight, srcRbBuffer.lambda, true);
+            if (!dst_ls || !dst_ls->L || dst_ls->pdf == 0)
+                return false;
+            
+            // ls->wi return ctx to target
+            Vector3f wo = dstGBuffer.isect->intr.wo, wi = -dst_ls->wi;
+            pstd::optional<BSDF> bsdf = dstGBuffer.bsdf;
+
+            if(!bsdf)
+                return false;
+
+            // BSDF use ctx point to target as wi and wo
+            SampledSpectrum f = bsdf->f(wo, -wi);
+            Float dst_brdf_pdf = bsdf->PDF(wo, -wi);
+            // TODO:: put this inside bsdf
+            if(!IsMetalRoughness(bsdf->Flags()))
+                f *= AbsDot(-wi, dstGBuffer.isect->intr.shading.n);
+
+            if(!srcReservoir.rc.lightPdf)
+                return false;
+
+            
+            Float misWeight = PowerHeuristic(1, srcReservoir.rc.lightPdf, 1, dst_brdf_pdf);
+
+            // use target to ctx point
+            // Vector3f dstConnectionV = wi;
+            // Vector3f srcConnectionV = srcReservoir.rc.rc_wi;
+
+            // Vector3f shiftedDisp = dstGBuffer.isect->intr.p() - dst_ls->pLight.p();
+            // Float shifted_dist2 = Dot(shiftedDisp, shiftedDisp);
+            // Float shifted_cosine = fabsf(Dot(dst_ls->pLight.n, -dstConnectionV));
+
+            // // this can cache in reservoir?
+            // Vector3f originalDisp = srcGBuffer.isect->intr.p() - dst_ls->pLight.p();
+            // Float original_dist2 = Dot(originalDisp, originalDisp);
+            // Float original_cosine = fabsf(Dot(dst_ls->pLight.n, -srcConnectionV));
+
+            // if(!shifted_dist2 || !original_cosine)
+            //     return false;
+
+            // jacobian *= shifted_cosine / shifted_dist2 * original_dist2 / original_cosine;
+
+            w_ld = ClampZero(dst_ls->L) * f * misWeight / srcReservoir.rc.lightPdf;
+
+            Interaction l_sh = dst_ls->pLight;
+            Interaction g_sh = dstGBuffer.isect->intr;
+
+            // Visibility check between reconnect vertex
+            if(w_ld && !Unoccluded(dstGBuffer.isect->intr, dst_ls->pLight))
+                w_ld = SampledSpectrum(0.0f);
+
+            // dstReservoir.target = SampledSpectrum(0.0f);
         }
-
-         // Evaluate BSDF for light sample and check light visibility
-        Vector3f wo = rsBuffer.isect->intr.wo, wi = ls->wi;
-        SampledSpectrum f = rsBuffer.bsdf->f(wo, wi);
-        if(!IsMetalRoughness(rsBuffer.bsdf->Flags()))
-            f *= AbsDot(wi, rsBuffer.isect->intr.shading.n);
-        if(!f){    
-            localLight.M++;
-            continue;
-        }
-
-        // RIS source PDF
-        Float source_p = sampledLight->p * ls->pdf;
-
-        // RIS target PDF
-        Float target_p = 0.0f;
         
-        // RIS f(x)
-        SampledSpectrum w_ld = ClampZero(ls->L) * f;
+    }
+    // central path y0 <- y1 <- y2 <- y3 (base path)
+    // spatial path x0 <- x1 <- x2 <- light(NEE or hitEmi)
+    // reconnect    y0 <- y1 <- x2 <- light(NEE or hitEmi) (offset path)
+    else if(srcReservoir.rc.rcType == 2){
+        // SampledWavelengths lambda = srcRbBuffer.lambda;
+        SampledWavelengths lambda = dstRbBuffer.lambda;
+        pstd::optional<ShapeIntersection> rc_isect = srcReservoir.rc.rc_isect;
 
-        // target_p += w_ld.ToLuminance(rbBuffer.lambda);
-        target_p += w_ld.ToLuminanceDisableWavelength();
+        Vector3f x1_wi = Normalize(srcGBuffer.isect->intr.p() - srcReservoir.rc.rc_isect.intr.p()), x2_wi;
+        Vector3f x1_wo = srcGBuffer.isect->intr.wo;
+        Vector3f y1_wi = Normalize(dstGBuffer.isect->intr.p() - srcReservoir.rc.rc_isect.intr.p());
+        Vector3f y1_wo = dstGBuffer.isect->intr.wo;
+        pstd::optional<BSDF> y1_bsdf = dstGBuffer.bsdf;
+        pstd::optional<BSDF> x1_bsdf = srcGBuffer.bsdf;
+        pstd::optional<BSDF> x2_bsdf = rc_isect->intr.GetBSDF(srcReservoir.rc.ray, lambda, camera, scratchBuffer, sampler);
 
-        if(streamReservoir(localLight, target_p, source_p, sampler))
+        if(!x2_bsdf || !y1_bsdf || !x1_bsdf)
+            return false;
+
+         // BSDF use ctx point to target as wi and wo
+        SampledSpectrum dstF1 = y1_bsdf->f(y1_wo, -y1_wi);
+        Float dstPDF1 = y1_bsdf->PDF(y1_wo, -y1_wi);
+        Float srcPDF1 = x1_bsdf->PDF(x1_wo, -x1_wi);
+
+        if(!srcPDF1)
+            return false;
+
+        jacobian = dstPDF1 / srcPDF1;
+
+        // use target to ctx point
+        Vector3f dstConnectionV = y1_wi;
+        Vector3f srcConnectionV = x1_wi;
+
+        if(!dstGBuffer.isect || !srcGBuffer.isect)
+            return false;
+
+        Vector3f shiftedDisp = dstGBuffer.isect->intr.p() - srcReservoir.rc.rc_isect.intr.p();
+        Float shifted_dist2 = Dot(shiftedDisp, shiftedDisp);
+        Float shifted_cosine = fabsf(Dot(srcReservoir.rc.rc_isect.intr.n, -dstConnectionV));
+
+        // this can cache in reservoir?
+        Vector3f originalDisp = srcGBuffer.isect->intr.p() - srcReservoir.rc.rc_isect.intr.p();
+        Float original_dist2 = Dot(originalDisp, originalDisp);
+        Float original_cosine = fabsf(Dot(srcReservoir.rc.rc_isect.intr.n, -srcConnectionV));
+
+        if(!shifted_dist2 || !original_cosine)
+            return false;
+
+        jacobian *= shifted_cosine / shifted_dist2 * original_dist2 / original_cosine;
+
+        SampledSpectrum dstF2;
+        Float dstPDF2;
+
+        if(srcReservoir.rc.isNEE){
+            // ls->wi return ctx to target
+            x2_wi = srcReservoir.rc.rc_wi;
+            dstF2 = x2_bsdf->f(y1_wi, -x2_wi);
+            dstPDF2 = srcReservoir.rc.lightPdf;
+            // Float srcPDF2 = x2_bsdf->PDF(x1_wi, -x2_wi);
+
+            Float dst_brdf_pdf = x2_bsdf->PDF(y1_wi, -x2_wi);
+
+            // if(!dstPDF1 || !dstPDF2 || !srcPDF2)
+            //     return false;
+
+            if(!dstPDF1 || !dstPDF2)
+                return false;
+
+            Float misWeight = PowerHeuristic(1, dstPDF2, 1, dst_brdf_pdf);
+
+            // jacobian *= dstPDF2 / srcPDF2;
+
+            w_ld = srcReservoir.rc.reconnectIrradiance * (dstF1 / dstPDF1) * (dstF2 / dstPDF2) * misWeight;
+        }
+        else if(srcReservoir.rc.isHitEmissive){
+            x2_wi = srcReservoir.rc.rc_wi;
+
+            // BSDF use ctx point to target as wi and wo
+            dstF2 = x2_bsdf->f(y1_wi, -x2_wi);
+            dstPDF2 = x2_bsdf->PDF(y1_wi, -x2_wi);
+            Float srcPDF2 = x2_bsdf->PDF(x1_wi, -x2_wi);
+
+            // Le use target to ctx point
+            if(!dstPDF1 || !dstPDF2 || !srcPDF2)
+                return false;
+
+            Float misWeight = PowerHeuristic(1, dstPDF2, 1, srcReservoir.rc.lightPdf);
+
+            jacobian *= dstPDF2 / srcPDF2;
+
+            w_ld = srcReservoir.rc.reconnectIrradiance * (dstF1 / dstPDF1)* (dstF2 / dstPDF2) * misWeight;
+        }
+
+        if(!jacobian)
+            return false;
+
+        Interaction l_sh = srcReservoir.rc.rc_isect.intr;
+        Interaction g_sh = dstGBuffer.isect->intr;
+
+        // Visibility check between reconnect vertex
+        if(w_ld && !Unoccluded(g_sh, l_sh))
+            w_ld = SampledSpectrum(0.0f);
+
+    }
+    // central path y0 <- y1 <- y2 <- y3 (base path)
+    // spatial path x0 <- x1 <- x2 <- x3
+    // reconnect    y0 <- y1 <- x2 <- x3 (offset path)
+    else if(srcReservoir.rc.rcType == 3){
+        // SampledWavelengths lambda = srcRbBuffer.lambda;
+        SampledWavelengths lambda = dstRbBuffer.lambda;
+        pstd::optional<ShapeIntersection> rc_isect = srcReservoir.rc.rc_isect;
+
+        if(!rc_isect)
+            return false;
+        
+        Vector3f x1_wo = srcGBuffer.isect->intr.wo, x1_wi = Normalize(srcGBuffer.isect->intr.p() - srcReservoir.rc.rc_isect.intr.p());
+        Vector3f x2_wi = srcReservoir.rc.rc_wi;
+        Vector3f y1_wo = dstGBuffer.isect->intr.wo, y1_wi = Normalize(dstGBuffer.isect->intr.p() - srcReservoir.rc.rc_isect.intr.p());
+
+        pstd::optional<BSDF> x1_bsdf = srcGBuffer.bsdf;
+        pstd::optional<BSDF> y1_bsdf = dstGBuffer.bsdf;
+        pstd::optional<BSDF> x2_bsdf = rc_isect->intr.GetBSDF(srcReservoir.rc.ray, lambda, camera, scratchBuffer, sampler);
+
+        if(!x2_bsdf || !y1_bsdf || !x1_bsdf)
+            return false;
+
+        // BSDF use ctx point to target as wi and wo
+        SampledSpectrum dstF2 = x2_bsdf->f(y1_wi, -x2_wi);
+        SampledSpectrum dstF1 = y1_bsdf->f(y1_wo, -y1_wi);
+        Float dstPDF2 = x2_bsdf->PDF(y1_wi, -x2_wi);
+        Float srcPDF2 = x2_bsdf->PDF(x1_wi, -x2_wi);
+        Float dstPDF1 = y1_bsdf->PDF(y1_wo, -y1_wi);
+        Float srcPDF1 = x1_bsdf->PDF(x1_wo, -x1_wi);
+
+        if(!dstPDF1 || !dstPDF2 || !srcPDF1 || !srcPDF2)
+            return false;
+
+        // use target to ctx point
+        Vector3f dstConnectionV = y1_wi;
+        Vector3f srcConnectionV = x1_wi;
+
+        if(!dstGBuffer.isect || !srcGBuffer.isect)
+            return false;
+
+        jacobian = dstPDF1 / srcPDF1;
+        jacobian *= dstPDF2 / srcPDF2;
+
+        Vector3f shiftedDisp = dstGBuffer.isect->intr.p() - srcReservoir.rc.rc_isect.intr.p();
+        Float shifted_dist2 = Dot(shiftedDisp, shiftedDisp);
+        Float shifted_cosine = fabsf(Dot(srcReservoir.rc.rc_isect.intr.n, -dstConnectionV));
+
+        // this can cache in reservoir?
+        Vector3f originalDisp = srcGBuffer.isect->intr.p() - srcReservoir.rc.rc_isect.intr.p();
+        Float original_dist2 = Dot(originalDisp, originalDisp);
+        Float original_cosine = fabsf(Dot(srcReservoir.rc.rc_isect.intr.n, -srcConnectionV));
+
+        if(!shifted_dist2 || !original_cosine)
+            return false;
+
+        jacobian *= shifted_cosine / shifted_dist2 * original_dist2 / original_cosine;
+
+        w_ld = srcReservoir.rc.reconnectIrradiance * dstF2 / dstPDF2 * dstF1 / dstPDF1;
+
+        if(!jacobian)
+            return false;
+
+        Interaction l_sh = srcReservoir.rc.rc_isect.intr;
+        Interaction g_sh = dstGBuffer.isect->intr;
+
+        // Visibility check between reconnect vertex
+        if(w_ld && !Unoccluded(dstGBuffer.isect->intr, srcReservoir.rc.rc_isect.intr))
+            w_ld = SampledSpectrum(0.0f);
+        
+    }
+
+    if(jacobian <= 0.0f)
+        return false;
+
+    if(restirPTSetting.jacobianThreshold != -1 && std::max(jacobian, 1.0f / jacobian) > 1.0f + restirPTSetting.jacobianThreshold)
+       return false;
+
+    return true;
+}
+
+// combine PT reservoir temporal
+void ReSTIRIntegrator::ReconnectTemporalResample(Point2i pPixel, Array2D<PTReservoir> &prevReservoirs, const Array2D<GBuffer> &prevGBuffers, PTReservoir &dstReservoir, const GBuffer &dstGBuffer, const RayBounceBuffer &dstRb, ScratchBuffer &scratchBuffer, Sampler &sampler){
+    
+    dstReservoir.M = 1;
+    finalResampling(dstReservoir);
+
+    PTReservoir tempDstReservoir = dstReservoir;
+
+    prepareMerge(tempDstReservoir);
+
+    if (!dstGBuffer.bsdf)
+        return;
+
+    if (!dstGBuffer.isect)
+        return;
+
+    Point2i prevPixel;
+
+    // get prev pixel pos
+    if(currentSampleIndex != 0)
+        prevPixel = pPixel;
+    else{
+        Float prevTime = currentTime - 1.0f / totalFrame;
+        if(prevTime < 0.f)
+            return;
+
+        Point3f prevPos = camera.reProjected(dstGBuffer.isect->intr.p(), prevTime);
+        prevPixel = Point2i(prevPos.x, prevPos.y);
+        
+        if(prevPixel.x < 0 || prevPixel.y < 0 || prevPixel.x >= prevReservoirs.XSize() || prevPixel.y >= prevReservoirs.YSize())
+            return;
+    }
+    
+
+    PTReservoir& prevReservoir = prevReservoirs[prevPixel];
+    const GBuffer& prevGBuffer = prevGBuffers[prevPixel];
+    prevReservoir.M = std::min<int>(restirPTSetting.historyLimit * dstReservoir.M, prevReservoir.M);
+
+    // convert W to weightSum, cause we might capping M and need fix w_sum
+    // if(!restirPTSetting.isTemporal)
+    //     dstReservoir.w_sum = dstReservoir.target.ToLuminanceDisableWavelengthV2() * dstReservoir.W * dstReservoir.M;
+
+    Float sum_approxPdf = 0.0f;
+    Float count = 0.0f;
+    Float chosen_approxPdf = 0.0f;
+    Float chosen_jacobian = 1.0f;
+    bool chosen_prev = false;
+
+    if(!prevGBuffer.bsdf)
+        return;
+
+    if(!prevGBuffer.isect)
+        return;
+
+    Float rng = sampler.Get1D();
+    if(restirDISetting.maxAge != -1 && prevReservoir.age > restirDISetting.maxAge  * (0.5 + rng * 0.5)){
+        return;
+    }
+    
+
+    if(!prevReservoir.M)
+        return;
+
+    if(!checkNormalSimilar(prevGBuffer.isect->intr.n, dstGBuffer.isect->intr.n, restirPTSetting.Nthreshold)
+        || !checkDepthSimilar(prevGBuffer.isect->tHit, dstGBuffer.isect->tHit, restirPTSetting.Dthreshold))
+        return;
+
+    
+
+    // merge reservoir
+    { 
+        Float target_p = 0.0f;
+        SampledSpectrum w_ld = SampledSpectrum(0.0f);
+        Float jacobian = 1.0f;
+
+        // TODO:: add MIS
+        if(!ShiftReservoir(tempDstReservoir, prevReservoir, dstGBuffer, prevGBuffer, dstRb, w_ld, jacobian, scratchBuffer, sampler)){
+            target_p = 0.0f;
+            jacobian = 0.0f;
+            w_ld = SampledSpectrum(0.0f);
+        }
+
+        target_p = w_ld.ToLuminanceDisableWavelengthV2();
+
+        if(combineReservoir(tempDstReservoir, prevReservoir, target_p, 1.0f, jacobian, sampler))
         {
-            localLight.targetPdf = target_p;
-            localLight.uv = uLight;
-            localLight.sampledLight = sampledLight;
-            localLight.ls = ls;
+            tempDstReservoir.rc = prevReservoir.rc;
+            tempDstReservoir.target = w_ld;
+            tempDstReservoir.age = prevReservoir.age;
+            tempDstReservoir.age++;
+
+            chosen_approxPdf = prevReservoir.target.ToLuminanceDisableWavelengthV2();
+            chosen_jacobian = jacobian;
+            chosen_prev = true;
         }
     }
 
-    reservoir = localLight;
+    // get combine misweight
+    
+    float misWeight = 0.f;
 
-    finalResampling(reservoir, rsBuffer, true, true);
-    // reservoir.weightSum = reservoir.targetPdf * reservoir.W * reservoir.M;
+    if(chosen_prev){
+        chosen_approxPdf = chosen_approxPdf / chosen_jacobian;
+        sum_approxPdf = chosen_approxPdf * prevReservoir.M + tempDstReservoir.target.ToLuminanceDisableWavelengthV2() * dstReservoir.M;
+        count = dstReservoir.M;
+
+    }
+    else{
+        count = dstReservoir.M;
+        chosen_approxPdf = dstReservoir.target.ToLuminanceDisableWavelengthV2();
+
+        Float target_p = 0.0f;
+        SampledSpectrum w_ld = SampledSpectrum(0.0f);
+        Float jacobian = 1.0f;
+
+        if(!ShiftReservoir(prevReservoir, tempDstReservoir, prevGBuffer, dstGBuffer, dstRb, w_ld, jacobian, scratchBuffer, sampler)){
+            target_p = 0.0f;
+            w_ld = SampledSpectrum(0.0f);
+            jacobian = 0.0f;
+        }
+
+        target_p = w_ld.ToLuminanceDisableWavelengthV2() * jacobian;
+
+        if (target_p > 0.f) count += prevReservoir.M;
+
+        sum_approxPdf = dstReservoir.target.ToLuminanceDisableWavelengthV2() * dstReservoir.M + target_p * prevReservoir.M;
+    } 
+
+    if (sum_approxPdf > 0.f){
+        misWeight = chosen_approxPdf / sum_approxPdf;
+        // misWeight = 1.f / count;
+    }
+
+    tempDstReservoir.W *= tempDstReservoir.M * misWeight;
+
+    finalResampling(tempDstReservoir);
+    dstReservoir = tempDstReservoir;
 }
 
+
+// combine PT reservoir spatial
+void ReSTIRIntegrator::ReconnectSpatialResample(Point2i pPixel, const Array2D<PTReservoir> &srcReservoirs, const Array2D<GBuffer> &srcGBuffers, const Array2D<RayBounceBuffer> &srcRb, PTReservoir &dstReservoir, ScratchBuffer &scratchBuffer, Sampler &sampler){
+    const GBuffer& dstGBuffer = srcGBuffers[pPixel];
+    const RayBounceBuffer& dstRbBuffer = srcRb[pPixel];
+    dstReservoir = srcReservoirs[pPixel];
+
+    if(!restirPTSetting.isTemporal){
+        dstReservoir.M = 1;
+        finalResampling(dstReservoir);
+    }
+    
+
+    PTReservoir tempDstReservoir = dstReservoir;
+
+    prepareMerge(tempDstReservoir);
+
+    if (!dstGBuffer.bsdf)
+        return;
+    if (!dstGBuffer.isect)
+        return;
+    // convert W to weightSum, cause we might capping M and need fix w_sum
+    // if(!restirPTSetting.isTemporal)
+    //     dstReservoir.w_sum = dstReservoir.target.ToLuminanceDisableWavelengthV2() * dstReservoir.W * dstReservoir.M;
+
+    Float sum_approxPdf = 0.0f;
+    Float count = 0.0f;
+    Float chosen_approxPdf = 0.0f;
+    Float chosen_jacobian = 1.0f;
+    Float chosen_M = tempDstReservoir.M;
+    int chosen_i = -1;
+
+    std::vector<Point2i> mergePixels;
+
+    for (size_t i = 0; i < restirPTSetting.numSpatialSamples; i++)
+    {
+        Point2f uv = sampler.Get2D();
+        Point2i offset = Point2i(((uv - Point2f(0.5f, 0.5f)) * restirPTSetting.spatialRadius ));
+        Point2i offsetPixel = pPixel + offset;
+        offsetPixel.x = pbrt::Clamp(offsetPixel.x, 0, srcReservoirs.XSize() - 1);
+        offsetPixel.y = pbrt::Clamp(offsetPixel.y, 0, srcReservoirs.YSize() - 1);
+
+        if(offsetPixel == pPixel)
+            continue;
+
+        const GBuffer& spatialGBuffer = srcGBuffers[offsetPixel];
+        const RayBounceBuffer& spatialRbBuffer = srcRb[offsetPixel];
+        PTReservoir srcReservoir = srcReservoirs[offsetPixel];
+        // srcReservoir.M = std::min<int>(std::min<int>(1024, restirPTSetting.historyLimit * std::max<int>(restirPTSetting.numLocalLightDISample, dstReservoir.M)), srcReservoir.M);
+
+        if(!spatialGBuffer.bsdf)
+            continue;
+
+        if(!spatialGBuffer.isect)
+            continue;
+
+        if(!srcReservoir.M)
+            continue;
+
+        if(!checkNormalSimilar(spatialGBuffer.isect->intr.n, dstGBuffer.isect->intr.n, restirPTSetting.Nthreshold)
+            || !checkDepthSimilar(spatialGBuffer.isect->tHit, dstGBuffer.isect->tHit, restirPTSetting.Dthreshold))
+            continue;
+        // make sure reservoir's weight convert to W
+        if(!restirPTSetting.isTemporal){
+            srcReservoir.M = 1;
+            finalResampling(srcReservoir);
+        }
+
+        // if(srcReservoir.rc.rcType != 1 || !srcReservoir.rc.isNEE)
+        //     continue;
+
+        mergePixels.push_back(offsetPixel);
+
+        Float target_p = 0.0f;
+        SampledSpectrum w_ld = SampledSpectrum(0.0f);
+        Float jacobian = 1.0f;
+
+        // TODO:: add MIS
+        if(!ShiftReservoir(tempDstReservoir, srcReservoir, dstGBuffer, spatialGBuffer, dstRbBuffer, w_ld, jacobian, scratchBuffer, sampler)){
+            target_p = 0.0f;
+            jacobian = 0.0f;
+            w_ld = SampledSpectrum(0.0f);
+        }
+
+        target_p = w_ld.ToLuminanceDisableWavelengthV2();
+
+        if(combineReservoir(tempDstReservoir, srcReservoir, target_p, 1.0f, jacobian, sampler))
+        {
+            tempDstReservoir.rc = srcReservoir.rc;
+            tempDstReservoir.target = w_ld;
+            tempDstReservoir.age = srcReservoir.age;
+            tempDstReservoir.age++;
+
+            chosen_approxPdf = srcReservoir.target.ToLuminanceDisableWavelengthV2();
+            chosen_jacobian = jacobian;
+            chosen_M = srcReservoir.M;
+            chosen_i = mergePixels.size() - 1;
+        }
+
+        // if(tempDstReservoir.rc.rcType == 1){
+        //     tempDstReservoir.test_wi = Normalize(dstGBuffer.isect->intr.p() - tempDstReservoir.rc.rc_Le_isect.intr.p());
+        // }
+
+        // finalResampling(dstReservoir, dstGBuffer, false, restirDISetting.reUseVisibility);
+    }
+
+    if(chosen_i == -1){
+        chosen_approxPdf = dstReservoir.target.ToLuminanceDisableWavelengthV2();
+        sum_approxPdf += chosen_approxPdf * dstReservoir.M;
+        count += dstReservoir.M;
+    }
+    else{
+        sum_approxPdf += tempDstReservoir.target.ToLuminanceDisableWavelengthV2() * dstReservoir.M;
+        count += dstReservoir.M;
+    }
+
+    
+
+    for (int i = 0; i < mergePixels.size(); i++)
+    {
+        if (i == chosen_i){
+            chosen_approxPdf = chosen_approxPdf / chosen_jacobian;
+            sum_approxPdf += chosen_approxPdf * chosen_M;
+            count += chosen_M; 
+
+            continue;
+        }
+
+        Point2i offsetPixel = mergePixels[i];
+
+        const GBuffer& spatialGBuffer = srcGBuffers[offsetPixel];
+        const RayBounceBuffer& spatialRbBuffer = srcRb[offsetPixel];
+        PTReservoir srcReservoir = srcReservoirs[offsetPixel];
+
+        if(!restirPTSetting.isTemporal){
+            srcReservoir.M = 1;
+            finalResampling(srcReservoir);
+        }
+
+        Float target_p = 0.0f;
+        SampledSpectrum w_ld = SampledSpectrum(0.0f);
+        Float jacobian = 1.0f;
+
+        if(!ShiftReservoir(srcReservoir, tempDstReservoir, spatialGBuffer, dstGBuffer, dstRbBuffer, w_ld, jacobian, scratchBuffer, sampler)){
+            target_p = 0.0f;
+            w_ld = SampledSpectrum(0.0f);
+            jacobian = 0.0f;
+        }
+
+        target_p = w_ld.ToLuminanceDisableWavelengthV2() * jacobian;
+
+        if (target_p > 0.f) count += srcReservoir.M;
+
+        sum_approxPdf += target_p * srcReservoir.M;
+    }
+
+    float misWeight = 0.f;
+
+    if (sum_approxPdf > 0.f){
+        misWeight = chosen_approxPdf / sum_approxPdf;
+        // misWeight = 1.f / count;
+    }
+
+    tempDstReservoir.W *= tempDstReservoir.M * misWeight;
+
+    finalResampling(tempDstReservoir);
+    dstReservoir = tempDstReservoir;
+}
+
+
 // check light occluded and shading for WRS
-void ReSTIRIntegrator::Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuffer, DIReservoir &reservoir){
+void ReSTIRIntegrator::Shading(RayBounceBuffer &rbBuffer, ReconnectData &rc, GBuffer &gBuffer, DIReservoir& diReservoir, PTReservoir &ptReservoir, ScratchBuffer &scratchBuffer, Sampler &sampler, RandomSeedCache &rand){
     if(!rbBuffer.ray)
         return;
 
-    if (!rsBuffer.bsdf)
+    if (!gBuffer.isect)
         return;
 
-    if (!IsNonSpecular(rsBuffer.bsdf->Flags()))
+    if (!gBuffer.bsdf)
         return;
 
-    if (!reservoir.sampledLight)
+    if (!IsNonSpecular(gBuffer.bsdf->Flags()))
         return;
 
-    if (!reservoir.ls || !reservoir.ls->L || reservoir.ls->pdf == 0)
+    if (!diReservoir.sampledLight)
         return;
 
-    if(!Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight))
+    if (!diReservoir.ls || !diReservoir.ls->L || diReservoir.ls->pdf == 0)
+        return;
+
+    // check visibility for DI's RIS
+    if((restirDISetting.finalVisCheck && !Unoccluded(gBuffer.isect->intr, diReservoir.ls->pLight))
+    ||  !diReservoir.visibility)
         return;
     
-    // if(!restirSetting.reUseVisibility){
-    //     storeVisibility(reservoir, Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight), restirSetting.reUseVisibility);
+    // if(!restirDISetting.reUseVisibility){
+    //     storeVisibility(reservoir, Unoccluded(rsBuffer.isect->intr, reservoir.ls->pLight), restirDISetting.reUseVisibility);
     // }
 
     // if(!reservoir.visibility)
     //     return;
     
-    Vector3f wo = rsBuffer.isect->intr.wo, wi = reservoir.ls->wi;
-    SampledSpectrum f = rsBuffer.bsdf->f(wo, wi);
-    if(!IsMetalRoughness(rsBuffer.bsdf->Flags()))
-        f *= AbsDot(wi, rsBuffer.isect->intr.shading.n);
-    // Evaluate BSDF for light sample and check light visibility
-    if (!f)
+    if (!diReservoir.w_ld)
         return;
+
+    SampledSpectrum Lr;
+    // SampledSpectrum reconnectIrradiance;
         
     // Return light's contribution to reflected radiance
-    rbBuffer.L += rbBuffer.beta * ClampZero(reservoir.ls->L) * f * reservoir.W;
+    // take DI's RIS result and stream into PT's RIS
+    // TODO:: DI's RIS sample from brdf (fix sampleLight & HitEmissive), and this step should put into HitEmissive
+    if (IsDeltaLight(diReservoir.sampledLight->light.Type()) || disableBSDFLightSample){
+        // Lr = rbBuffer.beta * diReservoir.w_ld * diReservoir.W;
+        Lr = rbBuffer.beta * diReservoir.w_ld;
+        rc.reconnectIrradiance = rbBuffer.rc_beta * diReservoir.w_ld;
+    }
+    else{
+        // current light point's sample pdf
+        Vector3f wo = -rbBuffer.ray->d, wi = diReservoir.ls->wi;
+        // TODO:: can we use pdf after DI's RIS?
+        Float light_pdf = diReservoir.sampledLight->p * diReservoir.ls->pdf;
+        Float brdf_pdf =  gBuffer.bsdf->PDF(wo, wi);
+        // MIS for GI's RIS
+        Float misWeight = PowerHeuristic(1, light_pdf, 1, brdf_pdf);
+        // Lr = rbBuffer.beta * diReservoir.w_ld * diReservoir.W * misWeight;
+        Lr = rbBuffer.beta * diReservoir.w_ld * misWeight / light_pdf;
+
+        // reconnectIrradiance for case 3
+        rc.reconnectIrradiance = rbBuffer.rc_beta * diReservoir.w_ld * misWeight / light_pdf;
+    }
+
+    pstd::optional<BSDF> prev_bsdf = {};
+    if(gBuffer.isect && rbBuffer.ray)
+        prev_bsdf = gBuffer.bsdf;
+
+    pstd::optional<BSDF> prev_prev_bsdf = {};
+    if(rbBuffer.prevIsect && rbBuffer.prevRay)
+        prev_prev_bsdf = rbBuffer.prevIsect->intr.GetBSDF(rbBuffer.prevRay.value(), rbBuffer.lambda, camera, scratchBuffer, sampler);
+
+    // case 1 & NEE light
+    if(isFirstRay && rc.rcType == 0){
+        rc.sampledLight = diReservoir.sampledLight.value();
+        rc.uLight = diReservoir.uv;
+        rc.lightPdf = diReservoir.sampledLight->p * diReservoir.ls->pdf;
+        rc.rc_wi = -diReservoir.ls->wi;
+        rc.rcType = 1;
+        rc.isNEE = true;
+        rc.isHitEmissive = false;
+    }
+    // case 2 & NEE light (same as case3?)
+    else if(rc.rcType == 0 && rbBuffer.depth == 3
+        && (prev_bsdf) && (prev_prev_bsdf)
+        && IsNonSpecular(prev_bsdf->Flags()) && IsNonSpecular(prev_prev_bsdf->Flags())){
+        rc.rc_isect = gBuffer.isect.value();
+        rc.ray = rbBuffer.ray.value();
+        rc.rc_wi = -diReservoir.ls->wi;
+        rc.lightPdf = diReservoir.sampledLight->p * diReservoir.ls->pdf;
+        rc.reconnectIrradiance = ClampZero(diReservoir.ls->L);
+        rc.rcType = 2;
+        rc.isNEE = true;
+        rc.isHitEmissive = false;
+    }
+
+    // rbBuffer.L += Lr;
+
+    /*sourcePdf of GI should be product of each bounce pdf, use one here cause we already multiply in beta and multiply in Lr */
+    if(streamReservoir(ptReservoir, Lr.ToLuminanceDisableWavelengthV2(), 1.0f, sampler))
+    {
+        ptReservoir.target = Lr;
+        ptReservoir.rc = rc;
+    }
+
+    // clear NEE reconnect event, return to normal PT condition after NEE condition 
+    if(rc.rcType == 2 || rc.rcType == 1){
+        rc.rcType = 0;
+        rc.isHitEmissive = false;
+        rc.isNEE = false;
+    }
+
+
     // rbBuffer.L += SampledSpectrum(1.0f);
     // rbBuffer.L[0] += rsBuffer.isect->intr.shading.n.x;
     // rbBuffer.L[1] += rsBuffer.isect->intr.shading.n.y;
@@ -1749,6 +2759,94 @@ void ReSTIRIntegrator::Shading(RayBounceBuffer &rbBuffer, RayStageBuffer &rsBuff
     //    Float w_l = PowerHeuristic(1, p_l, 1, p_b);
     //    rbBuffer.L += rbBuffer.beta * w_l * ClampZero(reservoir.ls->L) * f / p_l;
     // }
+}
+
+void ReSTIRIntegrator::SpawnBrdfRays(RayBounceBuffer &rbBuffer, ReconnectData &rc, GBuffer &gBuffer, ScratchBuffer &scratchBuffer, Sampler &sampler){
+    
+    if(!rbBuffer.ray)
+        return;
+
+    if (!gBuffer.isect)
+        return;
+
+    if (!gBuffer.bsdf)
+        return;
+    
+    Vector3f wo = -rbBuffer.ray->d;
+    Float u = sampler.Get1D();
+    // sample_f already divide by pdf
+    pstd::optional<BSDFSample> bs = gBuffer.bsdf->Sample_f(wo, u, sampler.Get2D());
+    if (!bs){
+        rbBuffer.ray.reset();
+        return;
+    }
+
+    pstd::optional<BSDF> prev_bsdf = {};
+    if(gBuffer.isect && rbBuffer.ray)
+        prev_bsdf = gBuffer.bsdf;
+
+    pstd::optional<BSDF> prev_prev_bsdf = {};
+    if(rbBuffer.prevIsect && rbBuffer.prevRay)
+        prev_prev_bsdf = rbBuffer.prevIsect->intr.GetBSDF(rbBuffer.prevRay.value(), rbBuffer.lambda, camera, scratchBuffer, sampler);
+
+    // Update path state variables after surface scattering
+    rbBuffer.beta *= bs->f;
+    if(rc.rcType == 3)
+        rbBuffer.rc_beta *= bs->f;
+    // rbBuffer.beta *= gBuffer.bsdf->f(wo, bs->wi) / bs->pdf;
+    if(!IsMetalRoughness(gBuffer.bsdf->Flags())){
+        rbBuffer.beta *= AbsDot(bs->wi, gBuffer.isect->intr.shading.n);
+        rbBuffer.beta /= bs->pdf;
+        rbBuffer.ray_pdf = bs->pdfIsProportional ? gBuffer.bsdf->PDF(wo, bs->wi) : bs->pdf;
+    }
+    rbBuffer.ray_pdf = bs->pdf;
+    rbBuffer.specularBounce = bs->IsSpecular();
+    rbBuffer.anyNonSpecularBounces |= !bs->IsSpecular();
+    if (bs->IsTransmission())
+        rbBuffer.etaScale *= Sqr(bs->eta);
+
+    // connect Case 3:
+    // x_k-1(rough) -> x_k(rough) -> x_k+1(*)
+    // rcVertex: x_k(rough)
+    if(rc.rcType == 0
+        && (prev_bsdf) && (prev_prev_bsdf)
+        && IsNonSpecular(prev_bsdf->Flags()) && IsNonSpecular(prev_prev_bsdf->Flags())){
+        rc.rc_isect = gBuffer.isect.value();
+        // rc.rc_bsdf = gBuffer.bsdf;
+        rc.ray = rbBuffer.ray.value();
+        rc.rc_wi = -bs->wi;
+        rc.rcType = 3;
+        rc.pathLength = rbBuffer.depth;
+    }
+
+
+    rbBuffer.prev_prevIsect = rbBuffer.prevIsect;
+    rbBuffer.prev_prevRay = rbBuffer.prevRay;
+
+    rbBuffer.prevIsect = gBuffer.isect;
+    rbBuffer.prevRay = rbBuffer.ray;
+
+    gBuffer.test_wi = bs->wi;
+
+    rbBuffer.ray = gBuffer.isect->intr.SpawnRay(rbBuffer.ray.value(), gBuffer.bsdf.value(), bs->wi, bs->flags, bs->eta);
+
+    // Possibly terminate the path with Russian roulette
+    if(enableRR){
+        SampledSpectrum rrBeta = rbBuffer.beta * rbBuffer.etaScale;
+        if (rrBeta.MaxComponentValue() < 1 && rbBuffer.depth > 2) {
+            Float q = std::max<Float>(0, 1 - rrBeta.MaxComponentValue());
+            if (sampler.Get1D() < q)
+            {
+                rbBuffer.ray.reset();
+                return;
+            }
+            rbBuffer.beta /= 1 - q;
+        }
+    }
+    
+
+    if(allFinished)
+        allFinished = false;    
 }
 // *Add
 // ReSTIRIntegrator Method Definitions
@@ -1770,9 +2868,11 @@ void ReSTIRIntegrator::Render() {
 
     // Declare common variables for rendering image in tiles
 
-    ThreadLocal<ScratchBuffer> scratchBuffers([]() { return ScratchBuffer(1024 * 1024); });
-    ThreadLocal<ScratchBuffer> prevScratchBuffers([]() { return ScratchBuffer(1024 * 1024); });
+    ThreadLocal<ScratchBuffer> curscratchBuffers([]() { return ScratchBuffer(512 * 512); });
+    ThreadLocal<ScratchBuffer> prevScratchBuffers([]() { return ScratchBuffer(512 * 512); });
+    ThreadLocal<ScratchBuffer> ptscratchBuffers([]() { return ScratchBuffer(512 * 512); });
     ThreadLocal<Sampler> samplers([this]() { return samplerPrototype.Clone(); });
+    ThreadLocal<RandomSeedCache> randomSeeds([]() { return RandomSeedCache{}; });
     // TODO::divide progress bar more properly
     ProgressReporter progress(int64_t(spp * totalFrame), "Rendering",
                               Options->quiet);
@@ -1821,7 +2921,7 @@ void ReSTIRIntegrator::Render() {
         Film film = camera.GetFilm();
         DisplayDynamic(filename, Point2i(pixelBounds.Diagonal()),
                        {"R", "G", "B"},
-                       [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
+                       [&](Bounds2i b, pstd::span<pstd::span<Float>> displayValue) {
                            int index = 0;
                            for (Point2i p : b) {
                                RGB rgb = film.GetPixelRGB(pixelBounds.pMin + p,
@@ -1833,16 +2933,22 @@ void ReSTIRIntegrator::Render() {
                        });
     }
 
-    int currentSampleIndex = 0;
     int currentSampleCount = 0;
 
-    // reset rayStageBuffer
-    firstDIRayStageBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
-    prevFirstDIRayStageBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
+    bool DIPingPongFlag = 0;
+    bool PTPingPongFlag = 0;
+
+    // reset gBuffer
+    pingGBuffers = Array2D<GBuffer>(camera.GetFilm().PixelBounds());
+    pongGBuffers = Array2D<GBuffer>(camera.GetFilm().PixelBounds());
+    ptGBuffers = Array2D<GBuffer>(camera.GetFilm().PixelBounds());
 
     // reset reservoir
-    firstDIReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
-    prevFirstDIReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+    pingDIReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+    pongDIReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+
+    pingPTReservoirBuffers = Array2D<PTReservoir>(camera.GetFilm().PixelBounds());
+    pongPTReservoirBuffers = Array2D<PTReservoir>(camera.GetFilm().PixelBounds());
 
     // Render image in waves
     while (currentTime < 1.0f) {
@@ -1851,15 +2957,21 @@ void ReSTIRIntegrator::Render() {
         threadSampleIndex = currentSampleIndex;
 
         // ping-pong
-        Array2D<RayStageBuffer>* rsBuffers = currentSampleCount % 2 ? &firstDIRayStageBuffers : &prevFirstDIRayStageBuffers;
-        Array2D<DIReservoir>* reservoirBuffers = currentSampleCount % 2 ? &firstDIReservoirBuffers : &prevFirstDIReservoirBuffers;
+        Array2D<GBuffer>* gBuffers = DIPingPongFlag ? &pingGBuffers : &pongGBuffers;
+        Array2D<DIReservoir>* diReservoirBuffers = DIPingPongFlag ? &pingDIReservoirBuffers : &pongDIReservoirBuffers;
+        Array2D<PTReservoir>* ptReservoirBuffers = PTPingPongFlag ? &pingPTReservoirBuffers : &pongPTReservoirBuffers;
         // reset buffer
         rayBounceBuffers = Array2D<RayBounceBuffer>(camera.GetFilm().PixelBounds());
+        rcBuffers = Array2D<ReconnectData>(camera.GetFilm().PixelBounds());
+        *ptReservoirBuffers = Array2D<PTReservoir>(camera.GetFilm().PixelBounds());
 
         stageIndex = 0;
+        progress.stage = 0;
+        // printf("Start stage %d", stageIndex);
         allFinished = true;
         isFirstRay = true;
   
+        // Spawn primary ray
         ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
             Sampler &sampler = samplers.Get();
 
@@ -1879,49 +2991,75 @@ void ReSTIRIntegrator::Render() {
             }
         });
         
+        // base path tracing
         while(!allFinished){
             // reset buffer
-            *rsBuffers = Array2D<RayStageBuffer>(camera.GetFilm().PixelBounds());
-            *reservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+            *gBuffers = Array2D<GBuffer>(camera.GetFilm().PixelBounds());
+            *diReservoirBuffers = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+            // TODO:: separate DI GI?
+            ThreadLocal<ScratchBuffer> &scratchBuffer = isFirstRay ? (DIPingPongFlag ? curscratchBuffers : prevScratchBuffers) : ptscratchBuffers;
+            scratchBuffer.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
 
             stageIndex = 1;
+            progress.stage = 1;
+            // printf("Start stage %d\n", stageIndex);
+            // Intersect (Surfaces)
             ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
             for (Point2i pPixel : tileBounds) {
-                StatsReportPixelStart(pPixel);
-                threadPixel = pPixel;
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
 
-                RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    GBuffer &gBuffer = (*gBuffers)[pPixel];
 
-                IntersectSurfaces(rbBuffer, rsBuffer);
-                
-                StatsReportPixelEnd(pPixel);
+                    IntersectSurfaces(rbBuffer, gBuffer);
+                    
+                    StatsReportPixelEnd(pPixel);
                 }
             });
             
+            // Hit Light
             stageIndex = 2;
+            progress.stage = 2;
+            // printf("Start stage %d\n", stageIndex);
             allFinished = true;
             ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                ScratchBuffer &scratchBuffer = isFirstRay ? (DIPingPongFlag ? curscratchBuffers.Get() : prevScratchBuffers.Get()) : ptscratchBuffers.Get();
+                Sampler &sampler = samplers.Get();
+                RandomSeedCache &rand = randomSeeds.Get();
+
                 for (Point2i pPixel : tileBounds) {
                     StatsReportPixelStart(pPixel);
                     threadPixel = pPixel;
 
                     RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+                    ReconnectData &rc = rcBuffers[pPixel];
+                    GBuffer &gBuffer = (*gBuffers)[pPixel];
+                    PTReservoir& ptReservoir = (*ptReservoirBuffers)[pPixel];
+                    DIReservoir& diReservoir = (*diReservoirBuffers)[pPixel];
 
-                    HitEmittedLight(rbBuffer, rsBuffer);
+                    sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
+
+                    HitEmittedLight(rbBuffer, rc, gBuffer, diReservoir, ptReservoir, scratchBuffer, sampler, rand);
                     
+                    rbBuffer.dim = sampler.GetDim();
+
                     StatsReportPixelEnd(pPixel);
                 }
             });
+
+            diReservoirBuffers = DIPingPongFlag ? &pingDIReservoirBuffers : &pongDIReservoirBuffers;
             
             if(allFinished)
                 break;
 
+            // Hit Surface, get bsdf
             stageIndex = 3;
+            progress.stage = 3;
+            // printf("Start stage %d\n", stageIndex);
             ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
                 // Render image tile given by _tileBounds_
-                ScratchBuffer &scratchBuffer = currentSampleCount % 2 ? scratchBuffers.Get() : prevScratchBuffers.Get();
+                ScratchBuffer &scratchBuffer = isFirstRay ? (DIPingPongFlag ? curscratchBuffers.Get() : prevScratchBuffers.Get()) : ptscratchBuffers.Get();
                 Sampler &sampler = samplers.Get();
 
                 for (Point2i pPixel : tileBounds) {
@@ -1929,12 +3067,12 @@ void ReSTIRIntegrator::Render() {
                     threadPixel = pPixel;
                     
                     RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+                    GBuffer &gBuffer = (*gBuffers)[pPixel];
 
                     // Render samples in pixel _pPixel_
                     sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
-                    GetBSDF(rbBuffer, rsBuffer, scratchBuffer, sampler);
+                    GetBSDF(rbBuffer, gBuffer, scratchBuffer, sampler);
 
                     rbBuffer.dim = sampler.GetDim();
                     
@@ -1943,30 +3081,43 @@ void ReSTIRIntegrator::Render() {
 
             });
 
-            stageIndex = 4;
-            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
-                Sampler &sampler = samplers.Get();
-                for (Point2i pPixel : tileBounds) {
-                    StatsReportPixelStart(pPixel);
-                    threadPixel = pPixel;
-
-                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
-                    DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
-
-                    sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
-
-                    SampleLights(rbBuffer, rsBuffer, reservoir, sampler);
-
-                    rbBuffer.dim = sampler.GetDim();
-                    
-                    StatsReportPixelEnd(pPixel);
-                }
-            });
-
-            if(isFirstRay)
+            // Hit Surface do sample from light (NEE)
+            if(!disableSampleFromLightSample)
             {
-                if(restirSetting.isSpatiotemporal)
+                stageIndex = 4;
+                progress.stage = 4;
+                // printf("Start stage %d\n", stageIndex);
+                ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                    Sampler &sampler = samplers.Get();
+                    RandomSeedCache &rand = randomSeeds.Get();
+
+                    for (Point2i pPixel : tileBounds) {
+                        StatsReportPixelStart(pPixel);
+                        threadPixel = pPixel;
+
+                        RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                        GBuffer &gBuffer = (*gBuffers)[pPixel];
+                        DIReservoir& reservoir = (*diReservoirBuffers)[pPixel];
+
+                        sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
+
+                        // cache random seed before sample light
+                        rand.p = sampler.GetPixel();
+                        rand.sampleIndex = sampler.GetSampleIndex();
+                        rand.dimension = sampler.GetDim();
+
+                        SampleLights(rbBuffer, gBuffer, sampler, reservoir);
+
+                        rbBuffer.dim = sampler.GetDim();
+                        
+                        StatsReportPixelEnd(pPixel);
+                    }
+                });
+            }
+
+            if(isFirstRay && enable_SS_ReSTIR_DI)
+            {
+                if(restirDISetting.isSpatiotemporal)
                 {
                     stageIndex = 5;
                     ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
@@ -1975,15 +3126,17 @@ void ReSTIRIntegrator::Render() {
                             StatsReportPixelStart(pPixel);
                             threadPixel = pPixel;
 
-                            Array2D<DIReservoir>* prevReservoirs = currentSampleCount % 2 ? &prevFirstDIReservoirBuffers : &firstDIReservoirBuffers;
-                            Array2D<RayStageBuffer>* prevRsBuffers = currentSampleCount % 2 ? &prevFirstDIRayStageBuffers : &firstDIRayStageBuffers;
+                            Array2D<DIReservoir>* prevReservoirs = DIPingPongFlag ? &pongDIReservoirBuffers : &pingDIReservoirBuffers;
+                            DIReservoir& curReservoir = (*diReservoirBuffers)[pPixel];
+                            Array2D<GBuffer>* prevGBuffers = DIPingPongFlag ? &pongGBuffers : &pingGBuffers;
+                            GBuffer& curGBuffer = (*gBuffers)[pPixel];
+                            
                             RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                            RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
-                            DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
+                            
 
                             sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
-                            SpatialtemporalResample(pPixel, *prevReservoirs, *prevRsBuffers, reservoir, rsBuffer, rbBuffer, sampler);
+                            SpatialtemporalResample(pPixel, *prevReservoirs, *prevGBuffers, curReservoir, curGBuffer, rbBuffer, sampler);
 
                             rbBuffer.dim = sampler.GetDim();
                             
@@ -1992,7 +3145,7 @@ void ReSTIRIntegrator::Render() {
                     });
                 }
                 else{
-                    if(restirSetting.isTemporal) //Temporal resampling combine
+                    if(restirDISetting.isTemporal) //Temporal resampling combine
                     {
                         stageIndex = 5;
                         ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
@@ -2001,15 +3154,16 @@ void ReSTIRIntegrator::Render() {
                                 StatsReportPixelStart(pPixel);
                                 threadPixel = pPixel;
 
-                                Array2D<DIReservoir>* prevReservoirs = currentSampleCount % 2 ? &prevFirstDIReservoirBuffers : &firstDIReservoirBuffers;
-                                Array2D<RayStageBuffer>* prevRsBuffers = currentSampleCount % 2 ? &prevFirstDIRayStageBuffers : &firstDIRayStageBuffers;
+                                Array2D<DIReservoir>* prevReservoirs = DIPingPongFlag ? &pongDIReservoirBuffers : &pingDIReservoirBuffers;
+                                DIReservoir& curReservoir = (*diReservoirBuffers)[pPixel];
+                                Array2D<GBuffer>* prevGBuffers = DIPingPongFlag ? &pongGBuffers : &pingGBuffers;
+                                GBuffer& curGBuffer = (*gBuffers)[pPixel];
+
                                 RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                                RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
-                                DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
 
                                 sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
-                                TemporalResample(pPixel, *prevReservoirs, *prevRsBuffers, reservoir, rsBuffer, rbBuffer, sampler);
+                                TemporalResample(pPixel, *prevReservoirs, *prevGBuffers, curReservoir, curGBuffer, rbBuffer, sampler);
 
                                 rbBuffer.dim = sampler.GetDim();
                                 
@@ -2018,10 +3172,10 @@ void ReSTIRIntegrator::Render() {
                         });
                     }
                     
-                    if(restirSetting.isSpatial) //Spatial resampling combine
+                    if(restirDISetting.isSpatial) //Spatial resampling combine
                     {
                         stageIndex = 6;
-                        Array2D<DIReservoir> spatialReservoir = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
+                        Array2D<DIReservoir> srcReservoir = Array2D<DIReservoir>(camera.GetFilm().PixelBounds());
                         ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
                             Sampler &sampler = samplers.Get();
                             for (Point2i pPixel : tileBounds) {
@@ -2029,11 +3183,11 @@ void ReSTIRIntegrator::Render() {
                                 threadPixel = pPixel;
 
                                 RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                                DIReservoir& reservoir = spatialReservoir[pPixel];
+                                DIReservoir& reservoir = srcReservoir[pPixel];
 
                                 sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
-                                SpatialResample(pPixel, *reservoirBuffers, *rsBuffers, rayBounceBuffers, reservoir, sampler);
+                                SpatialResample(pPixel, *diReservoirBuffers, *gBuffers, rayBounceBuffers, reservoir, sampler);
 
                                 rbBuffer.dim = sampler.GetDim();
                                 
@@ -2041,66 +3195,166 @@ void ReSTIRIntegrator::Render() {
                             }
                         });
                         // TODO?:: try pass with pointer not copy?
-                        *reservoirBuffers = Array2D<DIReservoir>(spatialReservoir);
+                        *diReservoirBuffers = Array2D<DIReservoir>(srcReservoir);
                     }
                 }
 
                 
             }
-            stageIndex = 7;
-            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
-                for (Point2i pPixel : tileBounds) {
-                    StatsReportPixelStart(pPixel);
-                    threadPixel = pPixel;
+            
+            if(!disableSampleFromLightSample)
+            {
+                stageIndex = 7;
+                progress.stage = 7;
+                // printf("Start stage %d\n", stageIndex);
+                ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                    ScratchBuffer &scratchBuffer = isFirstRay ? (DIPingPongFlag ? curscratchBuffers.Get() : prevScratchBuffers.Get()) : ptscratchBuffers.Get();
+                    Sampler &sampler = samplers.Get();
+                    RandomSeedCache &rand = randomSeeds.Get();
 
-                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
-                    DIReservoir& reservoir = (*reservoirBuffers)[pPixel];
+                    for (Point2i pPixel : tileBounds) {
+                        StatsReportPixelStart(pPixel);
+                        threadPixel = pPixel;
 
-                    Shading(rbBuffer, rsBuffer, reservoir);
-                    
-                    StatsReportPixelEnd(pPixel);
-                }
-            });
+                        RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                        ReconnectData &rc = rcBuffers[pPixel];
+                        GBuffer &gBuffer = (*gBuffers)[pPixel];
+                        DIReservoir& diReservoir = (*diReservoirBuffers)[pPixel];
+                        PTReservoir& ptReservoir = (*ptReservoirBuffers)[pPixel];
+
+                        sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
+
+                        Shading(rbBuffer, rc, gBuffer, diReservoir, ptReservoir, scratchBuffer, sampler, rand);
+
+                        rbBuffer.dim = sampler.GetDim();
+                        
+                        StatsReportPixelEnd(pPixel);
+                    }
+                });
+            }
 
             stageIndex = 8;
+            progress.stage = 8;
+            // printf("Start stage %d\n", stageIndex);
             allFinished = true;
             ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                ScratchBuffer &scratchBuffer = isFirstRay ? (DIPingPongFlag ? curscratchBuffers.Get() : prevScratchBuffers.Get()) : ptscratchBuffers.Get();
                 Sampler &sampler = samplers.Get();
+                RandomSeedCache &rand = randomSeeds.Get();
+
                 for (Point2i pPixel : tileBounds) {
                     StatsReportPixelStart(pPixel);
                     threadPixel = pPixel;
 
                     RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
-                    RayStageBuffer &rsBuffer = (*rsBuffers)[pPixel];
+                    ReconnectData &rc = rcBuffers[pPixel];
+                    GBuffer &gBuffer = (*gBuffers)[pPixel];
 
                     sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
 
-                    SpawnBrdfRays(rbBuffer, rsBuffer, sampler);
+
+                    // cache random seed before spawn brdf ray
+                    rand.p = sampler.GetPixel();
+                    rand.sampleIndex = sampler.GetSampleIndex();
+                    rand.dimension = sampler.GetDim();
+
+                    SpawnBrdfRays(rbBuffer, rc, gBuffer, scratchBuffer, sampler);
 
                     rbBuffer.dim = sampler.GetDim();
                     
                     StatsReportPixelEnd(pPixel);
                 }
             });
+
             if(allFinished)
                 break;
 
-            reservoirBuffers = &DIReservoirBuffers;
-            rsBuffers = &rayStageBuffers;
+            // swap here to store first ray's GBuffer & reservoir for temporal restir.
+            // for screen space GI ReSTIR use 3 ping-pong buffer and another swap when second hit?
+            if(isFirstRay)
+                DIPingPongFlag ^= 1;  
             isFirstRay = false;
+
+            gBuffers = &ptGBuffers;
 
         }
 
-        stageIndex = 9;
+        if(restirPTSetting.isTemporal) //Temporal resampling combine
+        {
+            stageIndex = 10;
+            progress.stage = 10;
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                ScratchBuffer &scratchBuffer = isFirstRay ? (!DIPingPongFlag ? curscratchBuffers.Get() : prevScratchBuffers.Get()) : ptscratchBuffers.Get();
+                Sampler &sampler = samplers.Get();
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    Array2D<PTReservoir>* prevReservoirs = PTPingPongFlag ? &pongPTReservoirBuffers : &pingPTReservoirBuffers;
+                    PTReservoir& curReservoir = (*ptReservoirBuffers)[pPixel];
+                    Array2D<GBuffer>* prevGBuffers = DIPingPongFlag ? &pingGBuffers : &pongGBuffers;
+                    GBuffer& curGBuffer = (DIPingPongFlag ? pongGBuffers : pingGBuffers)[pPixel];
+
+                    sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
+
+                    ReconnectTemporalResample(pPixel, *prevReservoirs, *prevGBuffers, curReservoir, curGBuffer, rbBuffer, scratchBuffer, sampler);
+
+                    rbBuffer.dim = sampler.GetDim();
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+        }
+
+        if(restirPTSetting.isSpatial) //Spatial resampling combine
+        {
+            stageIndex = 11;
+            progress.stage = 11;
+            // printf("Start stage %d\n", stageIndex);
+            Array2D<PTReservoir> dstReservoir = Array2D<PTReservoir>(camera.GetFilm().PixelBounds());
+            ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
+                ScratchBuffer &scratchBuffer = isFirstRay ? (!DIPingPongFlag ? curscratchBuffers.Get() : prevScratchBuffers.Get()) : ptscratchBuffers.Get();
+                Sampler &sampler = samplers.Get();
+                for (Point2i pPixel : tileBounds) {
+                    StatsReportPixelStart(pPixel);
+                    threadPixel = pPixel;
+
+                    RayBounceBuffer &rbBuffer = rayBounceBuffers[pPixel];
+                    PTReservoir& reservoir = dstReservoir[pPixel];
+                    Array2D<GBuffer>* curGBuffers = DIPingPongFlag ? &pongGBuffers : &pingGBuffers;
+
+                    sampler.StartPixelSample(pPixel, currentSampleCount, rbBuffer.dim);
+
+                    ReconnectSpatialResample(pPixel, *ptReservoirBuffers, *curGBuffers, rayBounceBuffers, reservoir, scratchBuffer, sampler);
+
+                    rbBuffer.dim = sampler.GetDim();
+                    
+                    StatsReportPixelEnd(pPixel);
+                }
+            });
+            // TODO?:: try pass with pointer not copy?
+            *ptReservoirBuffers = Array2D<PTReservoir>(dstReservoir);
+        }
+
+        stageIndex = 12;
+        progress.stage = 12;
+        // printf("Start stage %d\n", stageIndex);
         ParallelFor2D(pixelBounds, [&](Bounds2i tileBounds) {
             for (Point2i pPixel : tileBounds) {
                 StatsReportPixelStart(pPixel);
                 threadPixel = pPixel;
 
                 RayBounceBuffer &buffer = rayBounceBuffers[pPixel];
-                RayStageBuffer &rsBuffer = (currentSampleCount % 2 ? firstDIRayStageBuffers : prevFirstDIRayStageBuffers)[pPixel];
-                SampledSpectrum L = buffer.weight * buffer.L;
+                PTReservoir& ptReservoir = (*ptReservoirBuffers)[pPixel];
+                GBuffer &gBuffer = (DIPingPongFlag ? pongGBuffers : pingGBuffers)[pPixel];
+
+                // make sure reservoir's weight convert to W
+                if(!restirPTSetting.isSpatial && !restirPTSetting.isTemporal){
+                    ptReservoir.M = 1;
+                    finalResampling(ptReservoir);
+                }
+                
+                SampledSpectrum L = ptReservoir.target * ptReservoir.W + buffer.L;
 
                 // Issue warning if unexpected radiance value is returned
                 if (L.HasNaNs()) {
@@ -2118,21 +3372,30 @@ void ReSTIRIntegrator::Render() {
                 VisibleSurface visibleSurface;
                 
                 if(!disableFilmGBuffer){
-                    if(rsBuffer.isect){
-                    visibleSurface.p = rsBuffer.isect->intr.p();
-                    Vector3f wo = rsBuffer.isect->intr.wo;
-                    visibleSurface.n = FaceForward(rsBuffer.isect->intr.n, wo);
-                    visibleSurface.ns = FaceForward(rsBuffer.isect->intr.shading.n, wo);
-                    visibleSurface.uv = rsBuffer.isect->intr.uv;
-                    visibleSurface.time = rsBuffer.isect->intr.time;
-                    visibleSurface.dpdx = rsBuffer.isect->intr.dpdx;
-                    visibleSurface.dpdy = rsBuffer.isect->intr.dpdy;
+                    if(gBuffer.isect){
+                    visibleSurface.p = gBuffer.isect->intr.p();
+                    Vector3f wo = gBuffer.isect->intr.wo;
+                    
+                    visibleSurface.n = gBuffer.isect->intr.n;
+                    visibleSurface.ns = gBuffer.isect->intr.shading.n;
+                    visibleSurface.uv = gBuffer.isect->intr.uv;
+                    visibleSurface.time = gBuffer.isect->intr.time;
+                    visibleSurface.dpdx = gBuffer.isect->intr.dpdx;
+                    visibleSurface.dpdy = gBuffer.isect->intr.dpdy;
                     visibleSurface.set = true;
                     }
-                    if(rsBuffer.bsdf){
-                        visibleSurface.albedo = rsBuffer.bsdf->GetDiffuse();
-                        visibleSurface.specular = rsBuffer.bsdf->GetSpecular();
+                    if(gBuffer.bsdf){
+                        // visibleSurface.albedo = gBuffer.bsdf->GetDiffuse();
+                        // visibleSurface.albedo = ptReservoir.target;
+                        visibleSurface.albedo = SampledSpectrum(ptReservoir.rc.rcType);
+                        // visibleSurface.albedo = buffer.rc_beta;
+                        visibleSurface.specular = gBuffer.bsdf->GetSpecular();
                         visibleSurface.set = true;
+                    }
+                    if(gBuffer.isect){
+                        Vector3f wi = gBuffer.test_wi;
+                        visibleSurface.test0 = wi;
+                        visibleSurface.test1 = ptReservoir.rc.rcType == 1 ? ptReservoir.test_wi : Vector3f(0.0f, 0.0f, 0.0f);
                     }
                 }
                 
@@ -2144,9 +3407,9 @@ void ReSTIRIntegrator::Render() {
                 StatsReportPixelEnd(pPixel);
             }
         });
-        
-        ThreadLocal<ScratchBuffer> &scratchBuffer = currentSampleCount % 2 ? scratchBuffers : prevScratchBuffers;
-        scratchBuffer.ForAll([](ScratchBuffer &buffer) { buffer.Reset(); });
+
+        PTPingPongFlag ^= 1;
+        ptReservoirBuffers = PTPingPongFlag ? &pingPTReservoirBuffers : &pongPTReservoirBuffers;
         
         // Update start and end wave
         progress.Update(1);
@@ -2198,7 +3461,7 @@ void ReSTIRIntegrator::Render() {
                     filename = camera.GetFilm().GetFilename().insert(camera.GetFilm().GetFilename().find_last_of("."), "_" + frameId_str);
                     DisplayDynamic(filename, Point2i(pixelBounds.Diagonal()),
                                 {"R", "G", "B"},
-                                [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
+                                [&](Bounds2i b, pstd::span<pstd::span<Float>> displayValue) {
                                     int index = 0;
                                     for (Point2i p : b) {
                                         RGB rgb = film.GetPixelRGB(pixelBounds.pMin + p,
@@ -4354,7 +5617,7 @@ Float MISWeight(const Integrator &integrator, Camera camera, Vertex *lightVertic
         return 1;
     Float sumRi = 0;
     // Define helper function _remap0_ that deals with Dirac delta functions
-    auto remap0 = [](float f) -> Float { return f != 0 ? f : 1; };
+    auto remap0 = [](Float f) -> Float { return f != 0 ? f : 1; };
 
     // Temporarily update vertex properties for current strategy
     // Look up connection vertices and their predecessors
@@ -4842,7 +6105,7 @@ void MLTIntegrator::Render() {
         DisplayDynamic(
             camera.GetFilm().GetFilename(),
             Point2i(camera.GetFilm().PixelBounds().Diagonal()), {"R", "G", "B"},
-            [&](Bounds2i bounds, pstd::span<pstd::span<float>> displayValue) {
+            [&](Bounds2i bounds, pstd::span<pstd::span<Float>> displayValue) {
                 Film film = camera.GetFilm();
                 Bounds2i pixelBounds = film.PixelBounds();
                 int index = 0;
@@ -5068,7 +6331,7 @@ void SPPMIntegrator::Render() {
         if (iter == 0 && !Options->displayServer.empty()) {
             DisplayDynamic(
                 film.GetFilename(), Point2i(pixelBounds.Diagonal()), {"R", "G", "B"},
-                [&](Bounds2i b, pstd::span<pstd::span<float>> displayValue) {
+                [&](Bounds2i b, pstd::span<pstd::span<Float>> displayValue) {
                     int index = 0;
                     uint64_t np = (uint64_t)(iter + 1) * (uint64_t)photonsPerIteration;
                     for (Point2i pPixel : b) {

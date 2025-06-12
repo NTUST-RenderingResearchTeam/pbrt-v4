@@ -37,6 +37,11 @@ namespace pbrt {
 #define Sqrt2 Float(1.41421356237309504880)
 
 #define c_DielectricSpecular Float(0.04)
+#define kMinCosTheta Float(1e-6)
+// RTX-PT
+// #define kMinGGXAlpha Float(0.0064)
+// ReSTIR-PT
+#define kMinGGXAlpha Float(0.0001)
 
 #else
 
@@ -52,6 +57,12 @@ constexpr Float PiOver4 = 0.78539816339744830961;
 constexpr Float Sqrt2 = 1.41421356237309504880;
 
 constexpr Float c_DielectricSpecular = 0.04;
+
+constexpr Float kMinCosTheta = 1e-6;
+// RTX-PT
+// constexpr Float kMinGGXAlpha = 0.0064;
+// ReSTIR-PT
+constexpr Float kMinGGXAlpha = 0.0001;
 
 #endif
 

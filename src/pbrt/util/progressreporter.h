@@ -55,6 +55,7 @@ class ProgressReporter {
 
     std::string ToString() const;
 
+    int stage = 0;
   private:
     // ProgressReporter Private Methods
     void printBar();
@@ -64,6 +65,7 @@ class ProgressReporter {
     std::string title;
     bool quiet;
     Timer timer;
+    
     std::atomic<int64_t> workDone;
     std::atomic<bool> exitThread;
     std::thread updateThread;

@@ -69,7 +69,7 @@ ProgressReporter::~ProgressReporter() {
 }
 
 void ProgressReporter::printBar() {
-    int barLength = TerminalWidth() - 28;
+    int barLength = TerminalWidth() - 30;
     int totalPlusses = std::max<int>(2, barLength - title.size());
     int plussesPrinted = 0;
 
@@ -148,6 +148,8 @@ void ProgressReporter::printBar() {
             printf(" (%.1fs|%.1fs)  ", elapsed, std::max<Float>(0, estRemaining));
         else
             printf(" (%.1fs|?s)  ", elapsed);
+        
+        printf("s%d  ", stage);
         fflush(stdout);
     }
 }

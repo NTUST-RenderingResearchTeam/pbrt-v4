@@ -157,6 +157,7 @@ class VisibleSurface {
     Vector3f dpdx, dpdy;
     SampledSpectrum albedo;
     SampledSpectrum specular;
+    Vector3f test0, test1;
     bool set = false;
 };
 
@@ -474,6 +475,7 @@ class RestirGBufferFilm : public FilmBase {
         Point3f pSum;
         Float dzdxSum = 0, dzdySum = 0;
         Normal3f nSum, nsSum;
+        Vector3f test0Sum, test1Sum;
         Point2f uvSum;
         double rgbAlbedoSum[3] = {0., 0., 0.};
         double rgbSpecularSum[3] = {0., 0., 0.};

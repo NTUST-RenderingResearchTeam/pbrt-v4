@@ -104,6 +104,41 @@ class KdTreeAggregate {
     Bounds3f bounds;
 };
 
+struct Voxel;
+
+// UniformGridAggregate Definition
+class UniformGridAggregate {
+  public:
+    // UniformGridAggregate Public Methods
+    UniformGridAggregate(std::vector<Primitive> p, Point3i voxelNums = Point3i());
+    static UniformGridAggregate *Create(std::vector<Primitive> prims,
+                                   const ParameterDictionary &parameters);
+    pstd::optional<ShapeIntersection> Intersect(const Ray &ray, Float tMax) const;
+
+    Bounds3f Bounds() const { return bounds; }
+
+    bool IntersectP(const Ray &ray, Float tMax) const;
+
+  private:
+    // UniformGridAggregate Private Methods
+
+    inline int posToVxCoord(const Point3f &P, int axis) const {
+        return Clamp(int((P[axis] - bounds.pMin[axis]) * (1.0f / voxelWidth[axis])), 0, voxelNum[axis]-1);
+    }
+
+    inline float vxCoordToPos(int p, int axis) const {
+        return bounds.pMin[axis] + p * voxelWidth[axis];
+    }
+
+    // voxel num of each axis
+    Point3i voxelNum;
+    // width of each voxel
+    Point3f voxelWidth;
+    std::vector<Primitive> primitives;
+    Voxel *voxels;
+    Bounds3f bounds;
+};
+
 }  // namespace pbrt
 
 #endif  // PBRT_CPU_AGGREGATES_H

@@ -22,6 +22,8 @@
 #include <string>
 #include <type_traits>
 
+#define USE_FALCOR_MATERIAL    // use Falcor material, otherwise use Falcor material RTXDI MetalRoughnessMaterial
+
 namespace pbrt {
 
 // MaterialEvalContext Definition
@@ -85,26 +87,28 @@ struct NormalBumpEvalContext {
 // Normal Mapping Function Definitions
 inline PBRT_CPU_GPU void NormalMap(const Image &normalMap,
                                    const NormalBumpEvalContext &ctx, Vector3f *dpdu,
-                                   Vector3f *dpdv) {
+                                   Vector3f *dpdv, bool normalFlip = false) {
     // Get normalized normal vector from normal map
     // *Add RTX-DI, flip to fit RTX-DI normal map
-    bool normalFlip = true;
     WrapMode2D wrap(WrapMode::Repeat);
     Point2f uv(ctx.uv[0], 1 - ctx.uv[1]);
-    Vector3f ns(2 * normalMap.BilerpChannel(uv, 0, wrap) - 1,
-                2 * normalMap.BilerpChannel(uv, 1, wrap) - 1,
-                2 * normalMap.BilerpChannel(uv, 2, wrap) - 1);
+    Vector3f ns(2.0f * normalMap.BilerpChannel(uv, 0, wrap) - 1.0f,
+                2.0f * normalMap.BilerpChannel(uv, 1, wrap) - 1.0f,
+                2.0f * normalMap.BilerpChannel(uv, 2, wrap) - 1.0f);
 
-    if(normalFlip)
-    {
-        ns.x = -ns.x;
-        ns.z = -ns.z;
-    }
+    // if(normalFlip)
+    // {
+    //     ns.x = -ns.x;
+    //     ns.y = -ns.y;
+    //     ns.z = -ns.z;
+    // }
                 
     ns = Normalize(ns);
 
     // Transform tangent-space normal to rendering space
-    Frame frame = Frame::FromXZ(Normalize(ctx.shading.dpdu), Vector3f(ctx.shading.n));
+    Frame frame = Frame::FromXZ(Normalize(ctx.shading.dpdu), Vector3f(normalFlip ? ctx.shading.n : -ctx.shading.n));
+    // *Fix sync ReSTIR-PT
+    // Frame frame = Frame::FromZ(Vector3f(ctx.shading.n));
     ns = frame.FromLocal(ns);
 
     // Find $\dpdu$ and $\dpdv$ that give shading normal
@@ -187,6 +191,8 @@ class DielectricMaterial {
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
 
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
+
     template <typename TextureEvaluator>
     PBRT_CPU_GPU DielectricBxDF GetBxDF(TextureEvaluator texEval, MaterialEvalContext ctx,
                                         SampledWavelengths &lambda) const {
@@ -268,6 +274,8 @@ class ThinDielectricMaterial {
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
 
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
+
     std::string ToString() const;
 
   private:
@@ -336,6 +344,8 @@ class MixMaterial {
     }
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
+
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
 
     std::string ToString() const;
 
@@ -426,6 +436,8 @@ class HairMaterial {
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
 
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
+
     std::string ToString() const;
 
   private:
@@ -458,6 +470,8 @@ class DiffuseMaterial {
                                 SampledWavelengths &lambda, void *) const {}
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
+
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
 
     std::string ToString() const;
 
@@ -548,6 +562,8 @@ class ConductorMaterial {
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
 
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
+
     std::string ToString() const;
 
   private:
@@ -559,17 +575,18 @@ class ConductorMaterial {
     bool remapRoughness;
 };
 
-// TODO:: easy shading material
-// MetalRoughnessMaterial define
-// material use by rtx-di, can only use in restir integrator currently
-class MetalRoughnessMaterial {
+// DonutMaterial define
+// material use by nvidia's donut, can only use in restir integrator currently
+class DonutMaterial {
   public:
-    using BxDF = MetalRoughnessBxDF;
+
     using BSSRDF = void;
-    // MetalRoughnessMaterial Public Methods
-    MetalRoughnessMaterial(SpectrumTexture diffuseTex, SpectrumTexture specularTex, FloatTexture glossTex,
+#ifndef USE_FALCOR_MATERIAL
+    using BxDF = MetalRoughnessBxDF;
+    // DonutMaterial Public Methods
+    DonutMaterial(SpectrumTexture diffuseTex, SpectrumTexture specularTex, FloatTexture glossTex,
                           Spectrum diffuse, Spectrum specular,
-                          Spectrum roughness, Spectrum metallic, Spectrum eta,
+                          Spectrum roughness, Spectrum metallic, Spectrum ior,
                           FloatTexture displacement, Image *normalMap,
                           bool useSpecularGlossModel, int maxDepth, int nSamples)
         : displacement(displacement),
@@ -580,29 +597,69 @@ class MetalRoughnessMaterial {
           specular(specular),
           roughness(roughness),
           metallic(metallic),
-          eta(eta),
+          ior(ior),
           useSpecularGlossModel(useSpecularGlossModel),
           maxDepth(maxDepth),
           nSamples(nSamples) {}
 
-    static const char *Name() { return "MetalRoughnessMaterial"; }
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU MetalRoughnessBxDF GetBxDF(TextureEvaluator texEval,
+                                           const MaterialEvalContext &ctx,
+                                           SampledWavelengths &lambda) const;
+#else
+    using BxDF = FalcorBxDF;
+    DonutMaterial(SpectrumTexture diffuseTex, SpectrumTexture specularTex, SpectrumTexture emissiveTex,
+                    SpectrumTexture occlusionTex, SpectrumTexture transmissionTex, FloatTexture glossTex,
+                    Spectrum diffuse, Spectrum specular, Spectrum emissive,
+                    Spectrum metallic, Spectrum roughness,
+                    Spectrum opacity, Spectrum occlusionStrength,
+                     Spectrum transmissionFactor, Spectrum diffuseTransmissionFactor,
+                    /*Spectrum thicknessFactor, Spectrum alphaCutoff, */
+                    Spectrum ior, 
+                    FloatTexture displacement, Image *normalMap,
+                    bool useSpecularGlossModel, int maxDepth, int nSamples)
+        : displacement(displacement),
+          normalMap(normalMap),
+          diffuseTex(diffuseTex),
+          specularTex(specularTex),
+          emissiveTex(emissiveTex),
+          occlusionTex(occlusionTex),
+          transmissionTex(transmissionTex),
+          glossTex(glossTex),
+          diffuse(diffuse),
+          specular(specular),
+          emissive(emissive),
+          metallic(metallic),
+          roughness(roughness),
+          opacity(opacity),
+          occlusionStrength(occlusionStrength),
+          transmissionFactor(transmissionFactor),
+          diffuseTransmissionFactor(diffuseTransmissionFactor),
+          ior(ior),
+          useSpecularGlossModel(useSpecularGlossModel),
+          maxDepth(maxDepth),
+          nSamples(nSamples) {}
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU FalcorBxDF GetBxDF(TextureEvaluator texEval,
+                                           const MaterialEvalContext &ctx,
+                                           SampledWavelengths &lambda) const;
+#endif
+    static const char *Name() { return "DonutMaterial"; }
 
     template <typename TextureEvaluator>
     PBRT_CPU_GPU bool CanEvaluateTextures(TextureEvaluator texEval) const {
         return texEval.CanEvaluate({}, {diffuseTex, specularTex});
     }
 
-    template <typename TextureEvaluator>
-    PBRT_CPU_GPU MetalRoughnessBxDF GetBxDF(TextureEvaluator texEval,
-                                           const MaterialEvalContext &ctx,
-                                           SampledWavelengths &lambda) const;
+
 
     PBRT_CPU_GPU
     FloatTexture GetDisplacement() const { return displacement; }
     PBRT_CPU_GPU
     const Image *GetNormalMap() const { return normalMap; }
 
-    static MetalRoughnessMaterial *Create(const TextureParameterDictionary &parameters,
+    static DonutMaterial *Create(const TextureParameterDictionary &parameters,
                                          Image *normalMap, const FileLoc *loc,
                                          Allocator alloc);
 
@@ -612,20 +669,31 @@ class MetalRoughnessMaterial {
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
 
+    PBRT_CPU_GPU bool isTwoSided() const { return twoside; }
+
     std::string ToString() const;
 
   private:
-    // MetalRoughnessMaterial Private Members
-    FloatTexture displacement;
+    // DonutMaterial Private Members
+    // dount's MaterialConstants's parameter
+    FloatTexture displacement, glossTex;
     Image *normalMap;
-    SpectrumTexture diffuseTex, specularTex;
-    FloatTexture glossTex;
-    Spectrum diffuse, specular;     //3F
-    Spectrum roughness, metallic;   //1F
-    Spectrum eta;                   //1F
+    SpectrumTexture diffuseTex, specularTex, emissiveTex, occlusionTex, transmissionTex;
+    Spectrum diffuse, specular, emissive;                                       //3F
+    Spectrum roughness, metallic;                                               //1F
+    Spectrum occlusionStrength;                                                 //1F
+    Spectrum ior;                                                               //1F
     bool isSpecularGlossness;
-    bool useSpecularGlossModel = true;
+    bool useSpecularGlossModel = false;
     int maxDepth, nSamples;
+
+    bool twoside = true;
+
+    // this parameter have no use for shading currently
+    Spectrum thicknessFactor, alphaCutoff;                            //1F
+    // this parameter might not work in pbrt pipeline, we ingore them currently
+    // maybe need some fix
+    Spectrum transmissionFactor, opacity, diffuseTransmissionFactor;  //1F
 };
 
 // CoatedDiffuseMaterial Definition
@@ -679,6 +747,8 @@ class CoatedDiffuseMaterial {
                                 SampledWavelengths &lambda) const {}
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
+
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
 
     std::string ToString() const;
 
@@ -753,6 +823,8 @@ class CoatedConductorMaterial {
                                 SampledWavelengths &lambda, void *) const {}
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
+
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
 
     std::string ToString() const;
 
@@ -850,6 +922,8 @@ class SubsurfaceMaterial {
     PBRT_CPU_GPU
     static constexpr bool HasSubsurfaceScattering() { return true; }
 
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
+
     static SubsurfaceMaterial *Create(const TextureParameterDictionary &parameters,
                                       Image *normalMap, const FileLoc *loc,
                                       Allocator alloc);
@@ -913,6 +987,8 @@ class DiffuseTransmissionMaterial {
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
 
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
+
     std::string ToString() const;
 
   private:
@@ -959,6 +1035,8 @@ class MeasuredMaterial {
                                 SampledWavelengths &lambda, void *) const {}
 
     PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
+
+    PBRT_CPU_GPU bool isTwoSided() const { return false; }
 
     std::string ToString() const;
 
@@ -1019,6 +1097,11 @@ inline BSSRDF Material::GetBSSRDF(TextureEvaluator texEval, MaterialEvalContext 
 inline bool Material::HasSubsurfaceScattering() const {
     auto has = [&](auto ptr) { return ptr->HasSubsurfaceScattering(); };
     return Dispatch(has);
+}
+
+inline bool Material::isTwoSided() const {
+    auto twosided = [&](auto ptr) { return ptr->isTwoSided(); };
+    return Dispatch(twosided);
 }
 
 inline FloatTexture Material::GetDisplacement() const {

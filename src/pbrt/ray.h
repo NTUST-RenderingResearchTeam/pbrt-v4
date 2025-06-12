@@ -74,6 +74,7 @@ class RayDifferential : public Ray {
 // Ray Inline Functions
 PBRT_CPU_GPU inline Point3f OffsetRayOrigin(Point3fi pi, Normal3f n, Vector3f w) {
     // Find vector _offset_ to corner of error bounds and compute initial _po_
+
     Float d = Dot(Abs(n), pi.Error());
     Vector3f offset = d * Vector3f(n);
     if (Dot(w, n) < 0)
@@ -87,8 +88,22 @@ PBRT_CPU_GPU inline Point3f OffsetRayOrigin(Point3fi pi, Normal3f n, Vector3f w)
         else if (offset[i] < 0)
             po[i] = NextFloatDown(po[i]);
     }
-
     return po;
+
+    // *Fix sync ReSTIR-PT
+    // Float origin = 1.f / 32.f;
+    // Float fScale = 1.f / 65536.f;
+    // Float iScale = 256.f;
+
+    // // Per-component integer offset to bit representation of fp32 position.
+    // Point3i iOff(int(iScale * n.x), int(iScale * n.y) ,int(iScale *  n.z));
+    // Point3f iPos(Float(int(pi.x.Midpoint()) + ((pi.x.Midpoint() < 0) ? -iOff.x : iOff.x)), 
+    //              Float(int(pi.y.Midpoint()) + ((pi.y.Midpoint() < 0) ? -iOff.y : iOff.y)), 
+    //              Float(int(pi.z.Midpoint()) + ((pi.z.Midpoint() < 0) ? -iOff.z : iOff.z)));
+
+    // return Point3f(fabsf(pi.x.Midpoint()) < origin ? pi.x.Midpoint() + fScale * n.x : iPos.x, 
+    //                fabsf(pi.y.Midpoint()) < origin ? pi.y.Midpoint() + fScale * n.y : iPos.y,
+    //                fabsf(pi.z.Midpoint()) < origin ? pi.z.Midpoint() + fScale * n.z : iPos.z);
 }
 
 PBRT_CPU_GPU inline Ray SpawnRay(Point3fi pi, Normal3f n, Float time, Vector3f d) {
